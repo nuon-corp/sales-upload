@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매출 업로드 변환기</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1d2330; --muted: #667085; --line: #e3e6eb;
+    --accent: #2f5bd3; --accent-ink: #ffffff;
+    --ok: #e6f4ea; --ok-ink: #1e6b34; --warn: #fff4d6; --warn-ink: #7a5300;
+    --skip: #f1f1f3; --skip-ink: #555b66; --err: #fde2e1; --err-ink: #a1281f; --aux: #eaf0fb; --aux-ink: #2c4a8a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.55 "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 18px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
+  .ver { color: var(--muted); font-size: 13px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; margin-bottom: 16px; }
+  #drop { border: 2px dashed #c4cad4; border-radius: 12px; padding: 28px 16px; text-align: center; cursor: pointer;
+          transition: background .15s, border-color .15s; }
+  #drop.over { background: #eef3ff; border-color: var(--accent); }
+  #drop strong { display: block; font-size: 16px; margin-bottom: 4px; }
+  #drop span { color: var(--muted); font-size: 13px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 14px; }
+  button { font: inherit; border: 1px solid var(--line); background: #fff; color: var(--ink);
+           padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: #b8c0cc; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  .spacer { flex: 1; }
+  #status { color: var(--muted); font-size: 13px; }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { padding: 9px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  th { font-size: 12.5px; color: var(--muted); font-weight: 600; white-space: nowrap; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.file { word-break: break-all; min-width: 180px; }
+  tr.row { cursor: pointer; }
+  tr.row.sel td { background: #f3f6fd; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .s-대기 { background: var(--skip); color: var(--skip-ink); }
+  .s-완료 { background: var(--ok); color: var(--ok-ink); }
+  .s-확인필요 { background: var(--warn); color: var(--warn-ink); }
+  .s-건너뜀 { background: var(--skip); color: var(--skip-ink); }
+  .s-오류 { background: var(--err); color: var(--err-ink); }
+  .s-보조 { background: var(--aux); color: var(--aux-ink); }
+  .msg { color: var(--muted); font-size: 13px; max-width: 360px; }
+  .empty { color: var(--muted); text-align: center; padding: 22px 0; }
+  #detail { white-space: pre-wrap; font-size: 13.5px; min-height: 64px; margin: 0;
+            font-family: "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif; }
+  #detail .h { font-weight: 700; }
+  .note { color: var(--muted); font-size: 12.5px; margin: 10px 2px 0; }
+  .loading { display: inline-block; width: 12px; height: 12px; border: 2px solid #c4cad4; border-top-color: var(--accent);
+             border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .testbar { background: var(--warn); color: var(--warn-ink); border: 1px solid #f0d58a; border-radius: 10px;
+             padding: 10px 14px; margin-bottom: 16px; font-weight: 600; font-size: 14px; }
+  a.dl { color: var(--accent); text-decoration: none; font-size: 13px; white-space: nowrap; }
+  a.dl:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>매출 업로드 변환기</h1>
+    <span class="ver" id="ver">규칙 불러오는 중…</span>
+  </header>
+
+  <div class="panel">
+    <div id="drop" tabindex="0" role="button" aria-label="정산 엑셀 파일 추가">
+      <strong>채널 정산 엑셀을 여기에 끌어다 놓거나 클릭해서 선택하세요</strong>
+      <span>.xlsx · .xls 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
+    </div>
+    <input type="file" id="picker" multiple accept=".xlsx,.xlsm,.xls" hidden>
+    <div class="bar">
+      <button class="primary" id="run" disabled>변환</button>
+      <button id="zip" disabled>결과 전체 받기 (zip)</button>
+      <button id="clear">목록 비우기</button>
+      <span class="spacer"></span>
+      <span id="status"><span class="loading"></span>변환 엔진 준비 중… (처음 한 번 10초 정도)</span>
+    </div>
+    <p class="note">파일은 이 PC의 브라우저 안에서만 처리되고, 어디에도 전송·저장되지 않아요.</p>
+  </div>
+
+  <div class="panel table-wrap">
+    <table>
+      <thead><tr>
+        <th>원본 파일</th><th>채널</th><th>상태</th>
+        <th style="text-align:right">매출 (부가세 포함)</th><th style="text-align:right">수수료</th><th style="text-align:right">광고</th>
+        <th>안내</th><th></th>
+      </tr></thead>
+      <tbody id="rows"><tr><td colspan="8" class="empty">추가한 파일이 없어요</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <pre id="detail">행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.</pre>
+  </div>
+</div>
+
+<script>
+// 주소 뒤에 ?rules=convert_sales_test.py 를 붙이면 그 규칙 파일로 변환 (수정본을 미리 확인할 때)
+const RULES_PARAM = new URLSearchParams(location.search).get('rules');
+const RULES_FILE = RULES_PARAM && /^[\w.-]+\.py$/.test(RULES_PARAM) ? RULES_PARAM : 'convert_sales.py';
+const PYODIDE_URL = new URLSearchParams(location.search).get('pyodide')
+                    || 'https://cdn.jsdelivr.net/pyodide/v0.26.4/full/';
+const WHEELS = ['wheels/et_xmlfile-2.0.0-py3-none-any.whl',
+                'wheels/openpyxl-3.1.5-py2.py3-none-any.whl',
+                'wheels/xlrd-2.0.2-py2.py3-none-any.whl'];
+const TEMPLATE_NAME = '데이터 업로드 양식.xlsx';
+
+const $ = id => document.getElementById(id);
+let py = null, busy = false, selected = null;
+let items = [];   // {name, bytes, res}
+
+const STATUS = { '대기': '대기', '완료': '완료', '확인필요': '완료 · 확인필요', '건너뜀': '건너뜀', '오류': '오류', '보조': '함께 처리됨' };
+const won = n => (n || 0).toLocaleString('ko-KR');
+
+function setStatus(html) { $('status').innerHTML = html; }
+
+const BRIDGE = `
+import sys, os, io, json, zipfile, shutil, site
+def _install(name, data):
+    zipfile.ZipFile(io.BytesIO(bytes(data))).extractall(site.getsitepackages()[0])
+
+def _setup():
+    sys.path.insert(0, '/app')
+    if 'convert_sales' in sys.modules:
+        del sys.modules['convert_sales']
+    import convert_sales
+    return convert_sales.RULES_VERSION
+
+def _run(names):
+    import convert_sales as cs
+    for d in (cs.IN_DIR, cs.OUT_DIR):
+        os.makedirs(d, exist_ok=True)
+    for f in os.listdir(cs.OUT_DIR):
+        os.remove(os.path.join(cs.OUT_DIR, f))
+    paths = [os.path.join(cs.IN_DIR, n) for n in names]
+    try:
+        extra, _ = cs.load_config()
+    except Exception:
+        extra = []
+    res = cs.run_batch(paths, cs.OUT_DIR, extra)
+    out = []
+    for p in paths:
+        r = dict(res[p])
+        r['out'] = os.path.basename(r['out']) if r.get('out') else ''
+        r['sums'] = {k: list(v) for k, v in r.get('sums', {}).items()}
+        r['tax'] = {k: list(v) for k, v in r.get('tax', {}).items()}
+        out.append(r)
+    with zipfile.ZipFile('/app/결과.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(os.listdir(cs.OUT_DIR)):
+            z.write(os.path.join(cs.OUT_DIR, f), f)
+    return json.dumps(out, ensure_ascii=False)
+`;
+
+async function fetchBytes(url) {
+  const r = await fetch(url + (url.includes('?') ? '&' : '?') + 'v=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error(`${decodeURIComponent(url)} 를 불러오지 못했어요 (${r.status})`);
+  return new Uint8Array(await r.arrayBuffer());
+}
+
+function loadScript(src) {
+  return new Promise((ok, fail) => {
+    const sc = document.createElement('script'); sc.src = src; sc.onload = ok;
+    sc.onerror = () => fail(new Error('변환 엔진(pyodide)을 내려받지 못했어요'));
+    document.head.appendChild(sc);
+  });
+}
+
+async function boot() {
+  try {
+    await loadScript(PYODIDE_URL + 'pyodide.js');
+    py = await loadPyodide({ indexURL: PYODIDE_URL });
+    await py.runPythonAsync(BRIDGE);
+    const install = py.globals.get('_install');
+    for (const w of WHEELS) install(w, await fetchBytes(w));
+    py.FS.mkdirTree('/app/원본'); py.FS.mkdirTree('/app/결과');
+    // 규칙 파일과 양식은 매번 새로 받아서 GitHub에서 고친 내용이 바로 반영되게 함
+    py.FS.writeFile('/app/convert_sales.py', await fetchBytes(RULES_FILE));
+    py.FS.writeFile('/app/' + TEMPLATE_NAME, await fetchBytes(encodeURI(TEMPLATE_NAME)));
+    try { py.FS.writeFile('/app/채널설정.xlsx', await fetchBytes(encodeURI('채널설정.xlsx'))); } catch (e) { /* 선택 파일 */ }
+    const ver = py.globals.get('_setup')();
+    $('ver').textContent = `규칙 버전 ${ver}`;
+    if (RULES_FILE !== 'convert_sales.py') {
+      const b = document.createElement('div'); b.className = 'testbar';
+      b.textContent = `테스트 규칙(${RULES_FILE})으로 변환 중이에요. 실제 업로드용은 주소 뒤 ?rules=… 를 지운 기본 페이지를 쓰세요.`;
+      document.querySelector('.wrap').insertBefore(b, document.querySelector('.wrap').children[1]);
+    }
+    setStatus('준비 완료');
+  } catch (e) {
+    console.error(e);
+    setStatus(`<span style="color:var(--err-ink)">변환 엔진을 불러오지 못했어요: ${e.message} — 인터넷 연결을 확인하고 새로고침하세요</span>`);
+  }
+  refresh();
+}
+
+function addFiles(list) {
+  for (const f of list) {
+    if (f.name.startsWith('~$')) continue;
+    if (!/\.(xlsx|xlsm|xls)$/i.test(f.name)) { alert(`${f.name}\n\n엑셀 파일(.xlsx, .xls)만 변환할 수 있어요.`); continue; }
+    if (items.some(it => it.name === f.name)) continue;
+    const it = { name: f.name, bytes: null, res: null };
+    items.push(it);
+    f.arrayBuffer().then(b => { it.bytes = new Uint8Array(b); refresh(); });
+  }
+  refresh();
+}
+
+function statusKey(res) {
+  if (!res) return '대기';
+  if (res.status === '완료' && res.notes && res.notes.length) return '확인필요';
+  return res.status;
+}
+
+function total(res, k) {
+  const s = res && res.sums && res.sums[k];
+  return s && s[0] ? won(s[1] + s[2]) : '';
+}
+
+function refresh() {
+  const tb = $('rows');
+  if (!items.length) {
+    tb.innerHTML = '<tr><td colspan="8" class="empty">추가한 파일이 없어요</td></tr>';
+  } else {
+    tb.innerHTML = '';
+    items.forEach((it, i) => {
+      const r = it.res, k = statusKey(r);
+      const tr = document.createElement('tr');
+      tr.className = 'row' + (selected === i ? ' sel' : '');
+      const msg = r ? (r.message || (r.notes || []).concat(r.info || []).join(' / ')) : '';
+      tr.innerHTML = `
+        <td class="file"></td><td style="white-space:nowrap">${r && r.channel ? r.channel : ''}</td>
+        <td><span class="pill s-${k}">${STATUS[k]}</span></td>
+        <td class="num">${total(r, '매출')}</td><td class="num">${total(r, '수수료')}</td><td class="num">${total(r, '광고')}</td>
+        <td class="msg"></td><td></td>`;
+      tr.children[0].textContent = it.name;
+      tr.children[6].textContent = msg;
+      if (r && r.out) {
+        const a = document.createElement('a');
+        a.className = 'dl'; a.href = '#'; a.textContent = '받기';
+        a.onclick = e => { e.preventDefault(); e.stopPropagation(); download('/app/결과/' + r.out, r.out); };
+        tr.children[7].appendChild(a);
+      }
+      tr.onclick = () => { selected = i; refresh(); showDetail(); };
+      tb.appendChild(tr);
+    });
+  }
+  const ready = py && !busy;
+  $('run').disabled = !ready || !items.length || items.some(it => !it.bytes);
+  $('zip').disabled = !ready || !items.some(it => it.res && it.res.out);
+  $('clear').disabled = busy;
+}
+
+function showDetail() {
+  const it = items[selected];
+  if (!it) return;
+  const r = it.res;
+  if (!r) { $('detail').textContent = `${it.name}\n아직 변환하지 않았어요.`; return; }
+  const L = [`${it.name}  →  ${STATUS[statusKey(r)]}` + (r.channel ? `  (${r.channel})` : '')];
+  if (r.out) L.push(`결과 파일: ${r.out}`);
+  for (const [t, v] of Object.entries(r.sums || {})) if (v[0]) L.push(`  ${t}: ${v[0]}행  공급가 ${won(v[1])}  부가세 ${won(v[2])}  합계 ${won(v[1] + v[2])}`);
+  for (const [c, v] of Object.entries(r.tax || {})) L.push(`  부가세 ${c}: 공급가 ${won(v[0])}  부가세 ${won(v[1])}`);
+  if (r.message) L.push(r.message);
+  for (const n of r.notes || []) L.push('※ ' + n);
+  for (const n of r.info || []) L.push('· ' + n);
+  if (r.trace) L.push('\n[기술 정보 — 전산 담당자 전달용]\n' + r.trace);
+  $('detail').textContent = L.join('\n');
+}
+
+async function run() {
+  busy = true; refresh();
+  setStatus('<span class="loading"></span>변환 중…');
+  try {
+    // 규칙 파일을 다시 받아서 방금 고친 내용도 반영
+    try {
+      py.FS.writeFile('/app/convert_sales.py', await fetchBytes(RULES_FILE));
+      $('ver').textContent = `규칙 버전 ${py.globals.get('_setup')()}` + (RULES_FILE !== 'convert_sales.py' ? ` (테스트: ${RULES_FILE})` : '');
+    } catch (e) { console.warn('규칙 새로고침 실패, 기존 규칙 사용', e); }
+    for (const f of py.FS.readdir('/app/원본')) if (f !== '.' && f !== '..') py.FS.unlink('/app/원본/' + f);
+    for (const it of items) py.FS.writeFile('/app/원본/' + it.name, it.bytes);
+    await new Promise(r => setTimeout(r, 30));   // 화면 갱신
+    const out = JSON.parse(py.globals.get('_run')(py.toPy(items.map(it => it.name))));
+    out.forEach((r, i) => { items[i].res = r; });
+    const ok = out.filter(r => r.status === '완료').length;
+    const bad = out.filter(r => r.status === '건너뜀' || r.status === '오류').length;
+    setStatus(`변환 끝: ${ok}개 완료` + (bad ? `, ${bad}개 건너뜀/오류` : '') + ' — 업로드 전에 합계를 채널 정산서와 대조하세요');
+  } catch (e) {
+    console.error(e);
+    setStatus(`<span style="color:var(--err-ink)">변환 중 오류: ${e.message}</span>`);
+  }
+  busy = false; refresh(); if (selected !== null) showDetail();
+}
+
+function download(path, name) {
+  const data = py.FS.readFile(path);
+  const url = URL.createObjectURL(new Blob([data], { type: 'application/octet-stream' }));
+  const a = document.createElement('a'); a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+$('drop').onclick = () => $('picker').click();
+$('drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('picker').click(); } };
+$('picker').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+['dragenter', 'dragover'].forEach(t => $('drop').addEventListener(t, e => { e.preventDefault(); $('drop').classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => $('drop').addEventListener(t, e => { e.preventDefault(); $('drop').classList.remove('over'); }));
+$('drop').addEventListener('drop', e => addFiles(e.dataTransfer.files));
+$('run').onclick = run;
+$('zip').onclick = () => {
+  const d = new Date(), p = n => String(n).padStart(2, '0');
+  download('/app/결과.zip', `매출업로드_결과_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.zip`);
+};
+$('clear').onclick = () => { items = []; selected = null; $('detail').textContent = '행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.'; refresh(); };
+
+boot();
+</script>
+</body>
+</html>
