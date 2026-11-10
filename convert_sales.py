@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-10b'
+RULES_VERSION = '2026-11-10c'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -399,9 +399,9 @@ def parse_lotteon(wb, bk):
             bk.notes.append(f'{title} 시트에 금액이 있음 — 업로드 규칙 확인 필요 (이번 변환에는 미반영)')
 
 
-# 11번가 수수료 = 서비스이용료(상품)~서비스이용료(선결제배송비) − 11번가할인 + 서버이용료 → 11번가 수수료 세금계산서 합계와 일치
+# 11번가 수수료 = 서비스이용료(상품)~서비스이용료(선결제배송비) − 11번가할인 (+ '추가' 시트의 서버이용료) → 11번가 수수료 세금계산서 합계와 일치
 ST11_DISC_IN_FEE = -1         # 11번가할인을 수수료에서 뺌(-1) — 11번가 세금계산서 서비스이용료가 할인 차감 후 금액 (2026-11-10 확인)
-ST11_SERVER_FEE = 77000       # 11번가 월 서버이용료(부가세 포함). 안 나오는 달이면 0으로
+ST11_SERVER_FEE = 0           # 자동 추가 안 함 — 서버이용료는 원본의 '추가' 시트에 적기 (경영지원팀 결정 2026-11-10)
 ST11_ADJ_TAX = '14'   # 11번가 매출조정(11번가할인)을 차감할 과세구분 — 14(건별) (경영지원팀 확인 2026-11-10)
 ST11_PAY_TO_TAX = {'신용카드결제': '17', '현금영수증(소득공제용)': '31', '현금영수증(지출증빙용)': '31',
                    '휴대폰결제': '14', '기타결제금액': '14'}
@@ -454,6 +454,8 @@ def parse_11st(wb, bk):
     elif ST11_SERVER_FEE:
         bk.add_gross('수수료', None, '11번가 서버이용료', ST11_SERVER_FEE)
         bk.info.append(f'서버이용료 {ST11_SERVER_FEE:,}원을 수수료에 1행으로 추가')
+    elif ex is None:
+        bk.info.append("서버이용료 등 원본에 없는 금액은 원본 파일의 '추가' 시트에 적어야 반영돼요")
     # 공제금액합계에 모르는 항목이 섞였는지 검사 (11번가할인은 공제 항목이 아니라 제외하고 비교)
     known_ded = fee_t - ST11_DISC_IN_FEE * st11_disc + ad_t + sum(g(r, '할인쿠폰이용료') + g(r, '[공제]스토어묶음할인')
                                    for r in rows[hi + 1:] if isdigit(r[h['NO']]))
