@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-06'
+RULES_VERSION = '2026-11-10b'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -399,7 +399,10 @@ def parse_lotteon(wb, bk):
             bk.notes.append(f'{title} 시트에 금액이 있음 — 업로드 규칙 확인 필요 (이번 변환에는 미반영)')
 
 
-ST11_ADJ_TAX = '14'   # 11번가 매출조정(11번가할인)을 차감할 과세구분 — 경영지원팀 확인 전 임시
+# 11번가 수수료 = 서비스이용료(상품)~서비스이용료(선결제배송비) − 11번가할인 + 서버이용료 → 11번가 수수료 세금계산서 합계와 일치
+ST11_DISC_IN_FEE = -1         # 11번가할인을 수수료에서 뺌(-1) — 11번가 세금계산서 서비스이용료가 할인 차감 후 금액 (2026-11-10 확인)
+ST11_SERVER_FEE = 77000       # 11번가 월 서버이용료(부가세 포함). 안 나오는 달이면 0으로
+ST11_ADJ_TAX = '14'   # 11번가 매출조정(11번가할인)을 차감할 과세구분 — 14(건별) (경영지원팀 확인 2026-11-10)
 ST11_PAY_TO_TAX = {'신용카드결제': '17', '현금영수증(소득공제용)': '31', '현금영수증(지출증빙용)': '31',
                    '휴대폰결제': '14', '기타결제금액': '14'}
 
@@ -422,19 +425,37 @@ def parse_11st(wb, bk):
     known = set(fee_cols) | {'할인쿠폰이용료', '[공제]스토어묶음할인', '후불광고비',
                              '판매자기본할인', '판매자추가할인', '11번가할인', '복수구매할인비용', '판매자부담카드추가할인'}
     sale_t = fee_t = ad_t = ded_t = st11_disc = 0
+    fee_svc = fee_ship = 0   # 11번가 수수료 세금계산서 품목별 합계 (서비스이용료 / 서비스이용료(선결제배송비))
     for r in rows[hi + 1:]:
         if not isdigit(r[h['NO']]):
             continue
         code, name = r[h['상품번호']], r[h['상품명']]
         sale = g(r, '판매금액합계') - g(r, '할인쿠폰이용료') - g(r, '[공제]스토어묶음할인') - g(r, '11번가할인')
-        fee = sum(g(r, c) for c in fee_cols)
+        fee = sum(g(r, c) for c in fee_cols) + ST11_DISC_IN_FEE * g(r, '11번가할인')
         ad = g(r, '후불광고비')
         bk.add_gross('매출', code, name, sale)
         bk.add_gross('수수료', code, name, fee)
         bk.add_gross('광고', code, name, ad)
+        fee_svc += g(r, '서비스이용료(상품)') + g(r, '제휴마케팅대행(상품)') + ST11_DISC_IN_FEE * g(r, '11번가할인')
+        fee_ship += g(r, '서비스이용료(선결제배송비)') + g(r, '제휴마케팅대행(선결제배송비)')
         sale_t += sale; fee_t += fee; ad_t += ad; ded_t += g(r, '공제금액합계'); st11_disc += g(r, '11번가할인')
-    # 공제금액합계에 모르는 항목이 섞였는지 검사
-    known_ded = fee_t + ad_t + sum(g(r, '할인쿠폰이용료') + g(r, '[공제]스토어묶음할인')
+    # 부가세대급금이 11번가 세금계산서와 같도록: 세금계산서는 품목 합계마다 ÷1.1 하므로 행별 반올림 차이를 가장 큰 행에서 보정
+    others = fee_t - fee_svc - fee_ship
+    target_vat = sum(split_vat(x)[1] for x in (fee_svc, fee_ship, others) if x)
+    fee_rows = bk.rows['수수료']
+    diff = target_vat - sum(x[3] for x in fee_rows)
+    if diff and fee_rows and abs(diff) <= len(fee_rows):
+        big = max(fee_rows, key=lambda x: x[2])
+        big[3] += diff; big[2] -= diff
+        bk.info.append(f'수수료 부가세 반올림 차이 {diff:+}원을 가장 큰 행에서 보정 (세금계산서 기준)')
+    ex = extra_sheet(wb)
+    if ex is not None and any('서버이용료' in str(v) for r in ex.iter_rows(values_only=True) for v in r if v):
+        pass   # '추가' 시트에 적어 둔 서버이용료를 씀 (자동 추가 안 함)
+    elif ST11_SERVER_FEE:
+        bk.add_gross('수수료', None, '11번가 서버이용료', ST11_SERVER_FEE)
+        bk.info.append(f'서버이용료 {ST11_SERVER_FEE:,}원을 수수료에 1행으로 추가')
+    # 공제금액합계에 모르는 항목이 섞였는지 검사 (11번가할인은 공제 항목이 아니라 제외하고 비교)
+    known_ded = fee_t - ST11_DISC_IN_FEE * st11_disc + ad_t + sum(g(r, '할인쿠폰이용료') + g(r, '[공제]스토어묶음할인')
                                    for r in rows[hi + 1:] if isdigit(r[h['NO']]))
     if known_ded != ded_t:
         bk.notes.append(f'공제금액합계({ded_t:,})와 반영한 공제 항목 합({known_ded:,})이 다름 — 새 공제 항목 확인 필요')
@@ -445,30 +466,97 @@ def parse_11st(wb, bk):
     if not vat_files:
         bk.notes.append('11번가 부가세신고내역상세가 없어 부가세 시트를 비움 — 정산 파일에 부가세 시트를 붙여 넣거나 같은 기간 파일을 같이 추가하세요')
         return
-    fname, vws = vat_files[0]
-    vrows = list(vws.iter_rows(values_only=True))
-    vi = find_header(vrows, '정산확정처리일', '과세매출금액')
-    vh = header_index(vrows[vi])
-    taxable_total = adj_total = 0
-    for r in vrows[vi + 1:]:
-        if not (isinstance(r[0], str) and '/' in r[0]):
-            continue
-        taxable_total += num(r[vh['과세매출금액']])
-        if '매출조정금액' in vh:
-            adj_total += num(r[vh['매출조정금액']])
-        for pay, code in ST11_PAY_TO_TAX.items():
-            if pay in vh:
-                bk.add_tax_gross(code, num(r[vh[pay]]))
-        if num(r[vh['면세매출금액']]) or num(r[vh['영세매출금액']]):
-            bk.notes.append('부가세신고에 면세/영세 매출이 있음 — 처리 규칙 확인 필요')
-    if adj_total:   # 11번가할인(매출조정)은 결제수단 구분이 없어 14(건별)에서 차감
+    def read_vat(vws):
+        vrows = list(vws.iter_rows(values_only=True))
+        vi = find_header(vrows, '정산확정처리일', '과세매출금액')
+        vh = header_index(vrows[vi])
+        tot = {'taxable': 0, 'adj': 0, 'pay': defaultdict(int), 'free': False}
+        for r in vrows[vi + 1:]:
+            if not (isinstance(r[0], str) and '/' in r[0]):
+                continue
+            tot['taxable'] += num(r[vh['과세매출금액']])
+            if '매출조정금액' in vh:
+                tot['adj'] += num(r[vh['매출조정금액']])
+            for pay, code in ST11_PAY_TO_TAX.items():
+                if pay in vh:
+                    tot['pay'][code] += num(r[vh[pay]])
+            if num(r[vh['면세매출금액']]) or num(r[vh['영세매출금액']]):
+                tot['free'] = True
+        return tot
+
+    # 같은 기간 부가세 파일이 여러 개면(예: 11번가 계정이 여러 개) 금액이 맞는 파일을 고름
+    cands = [(fname, read_vat(vws)) for fname, vws in vat_files]
+    match = [c for c in cands if c[1]['taxable'] + c[1]['adj'] == sale_t]
+    fname, tot = (match or cands)[0]
+    if not match:
+        bk.notes.append(f'정산파일 매출({sale_t:,})과 금액이 맞는 부가세신고내역이 없음 — 같은 계정·기간 파일인지 확인')
+    elif len(cands) > 1:
+        bk.info.append(f'부가세신고내역 {len(cands)}개 중 금액이 맞는 파일을 사용')
+    for code, amt in tot['pay'].items():
+        bk.add_tax_gross(code, amt)
+    if tot['free']:
+        bk.notes.append('부가세신고에 면세/영세 매출이 있음 — 처리 규칙 확인 필요')
+    adj_total = tot['adj']
+    if adj_total:   # 11번가할인(매출조정)은 결제수단 구분이 없어 한 과세구분에서 차감
         bk.add_tax_gross(ST11_ADJ_TAX, adj_total)
-        bk.notes.append(f'매출조정금액 {adj_total:,}원을 부가세 시트 {ST11_ADJ_TAX}({TAX_NAME.get(ST11_ADJ_TAX, "")})에서 차감 — 과세구분 맞는지 확인')
+        bk.info.append(f'매출조정금액 {adj_total:,}원을 부가세 시트 {ST11_ADJ_TAX}({TAX_NAME.get(ST11_ADJ_TAX, "")})에서 차감')
     bk.info.append(f'부가세: {fname} 사용')
-    if taxable_total + adj_total != sale_t:
-        bk.notes.append(f'정산파일 매출({sale_t:,})과 부가세신고 과세매출+매출조정({taxable_total + adj_total:,})이 다름 — 기간이 같은 파일인지 확인')
     if -adj_total != st11_disc:
         bk.notes.append(f'정산파일 11번가할인({st11_disc:,})과 부가세신고 매출조정({adj_total:,})이 다름 — 확인 필요')
+
+
+# ── 수기 추가 시트 ('추가') ─────────────────────────────────────────
+# 원본에 없는 금액(예: 월 서버이용료)을 원본 파일에 '추가' 시트를 만들어 적으면 업로드 파일에 한 줄씩 넣음.
+#   열: 구분(매출/수수료/광고) | 상품명 | 금액(부가세 포함) | 상품코드(선택) | 과세구분(선택, 매출일 때 14/17/31, 기본 14)
+#   금액을 부가세 별도로 적으려면 '공급가' 열에 적고 금액은 비워 둠.
+EXTRA_SHEET = '추가'
+
+
+def extra_sheet(wb):
+    return next((ws for ws in wb if ws.title.replace(' ', '').startswith(EXTRA_SHEET)), None)
+
+
+def apply_extra(wb, bk):
+    ws = extra_sheet(wb)
+    if ws is None:
+        return
+    rows = list(ws.iter_rows(values_only=True))
+    try:
+        hi = find_header(rows, '구분', '상품명')
+    except StopIteration:
+        bk.notes.append("'추가' 시트에 '구분', '상품명' 제목 줄이 없어 반영하지 못함")
+        return
+    h = header_index(rows[hi])
+    n = 0
+    for r in rows[hi + 1:]:
+        kind = str(r[h['구분']] or '').strip()
+        name = str(r[h['상품명']] or '').strip()
+        if not kind and not name:
+            continue
+        if kind not in ('매출', '수수료', '광고') or not name:
+            bk.notes.append(f"'추가' 시트 줄을 건너뜀 (구분은 매출/수수료/광고, 상품명 필수): {kind} {name}")
+            continue
+        code = r[h['상품코드']] if '상품코드' in h else None
+        gross = num(r[h['금액']]) if '금액' in h else 0
+        sup_only = num(r[h['공급가']]) if '공급가' in h else 0
+        if gross:
+            sup, vat = split_vat(gross)
+        elif sup_only:
+            sup, vat = sup_only, vat10(sup_only)
+        else:
+            bk.notes.append(f"'추가' 시트 줄에 금액이 없음: {kind} {name}")
+            continue
+        bk.add(kind, code, name, sup, vat)
+        if sup + vat < 0:
+            bk.notes.append(f"'추가' 시트 {kind} '{name}'이 마이너스({sup + vat:,})로 적힘 — {kind}을(를) 줄이는 금액이 맞는지 확인 (나가는 수수료·광고비는 플러스로 적기)")
+        if kind == '매출':
+            tax = str(r[h['과세구분']]).strip() if '과세구분' in h and r[h['과세구분']] not in (None, '') else '14'
+            if bk.tax_rows:
+                bk.add_tax_row(tax, sup, vat)
+            else:
+                bk.add_tax(tax, sup, vat)
+        n += 1
+        bk.info.append(f"'추가' 시트: {kind} '{name}' {sup + vat:,}원 반영")
 
 
 # ── 설정형 채널 (채널설정.xlsx) ───────────────────────────────────────
@@ -651,6 +739,7 @@ def run_one(path, out_dir, extra, preloaded=None, companions=None):
                 if target == ch and det(sw):
                     bk.companions[key] = [(f"같은 파일의 '{ws.title}' 시트", ws)]
         parse(wb, bk)
+        apply_extra(wb, bk)
         bk.finalize()
         base = os.path.splitext(os.path.basename(path))[0]
         out = os.path.join(out_dir, f'업로드_{ch}_{base}.xlsx')
