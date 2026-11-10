@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-10c'
+RULES_VERSION = '2026-11-10d'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -103,6 +103,11 @@ def period_of(words):
         if m:
             return m.group(1).replace('.', '/').replace('-', '/') + '~' + m.group(2).replace('.', '/').replace('-', '/')
     return ''
+
+
+def first_sheet(wb):
+    """첫 번째 데이터 시트 ('추가' 시트는 건너뜀)."""
+    return next((ws for ws in wb if not ws.title.replace(' ', '').startswith('추가')), wb.worksheets[0])
 
 
 def sheet(wb, prefix):
@@ -216,7 +221,7 @@ def parse_ns(wb, bk):
 
 def parse_nudge(wb, bk):
     """넛지헬스케어 캐시딜: 매출 = 상품합계(A), 수수료 = 판매수수료(VAT 포함 가정)."""
-    ws = wb.worksheets[0]
+    ws = first_sheet(wb)
     rows = list(ws.iter_rows(values_only=True))
     h = header_index(rows[0])
     bigo = len(rows[0]) - 1
@@ -594,7 +599,7 @@ def load_config():
 
 def parse_config(wb, bk, cfg, pay_map):
     """한 시트에 '헤더 1줄 + 거래 행'이 있는 단순한 채널."""
-    ws = sheet(wb, cfg['시트']) if cfg['시트'] else wb.worksheets[0]
+    ws = sheet(wb, cfg['시트']) if cfg['시트'] else first_sheet(wb)
     if ws is None:
         raise ValueError(f"시트 '{cfg['시트']}'를 찾지 못했습니다")
     rows = list(ws.iter_rows(values_only=True))
