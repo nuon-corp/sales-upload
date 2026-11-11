@@ -72,9 +72,9 @@
   <div class="panel">
     <div id="drop" tabindex="0" role="button" aria-label="정산 엑셀 파일 추가">
       <strong>채널 정산 엑셀을 여기에 끌어다 놓거나 클릭해서 선택하세요</strong>
-      <span>.xlsx · .xls 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
+      <span>.xlsx · .xls · .csv 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
     </div>
-    <input type="file" id="picker" multiple accept=".xlsx,.xlsm,.xls" hidden>
+    <input type="file" id="picker" multiple accept=".xlsx,.xlsm,.xls,.csv" hidden>
     <div class="bar">
       <button class="primary" id="run" disabled>변환</button>
       <button id="zip" disabled>결과 전체 받기 (zip)</button>
@@ -202,7 +202,7 @@ async function boot() {
 function addFiles(list) {
   for (const f of list) {
     if (f.name.startsWith('~$')) continue;
-    if (!/\.(xlsx|xlsm|xls)$/i.test(f.name)) { alert(`${f.name}\n\n엑셀 파일(.xlsx, .xls)만 변환할 수 있어요.`); continue; }
+    if (!/\.(xlsx|xlsm|xls|csv)$/i.test(f.name)) { alert(`${f.name}\n\n엑셀(.xlsx, .xls)이나 CSV 파일만 변환할 수 있어요.`); continue; }
     if (items.some(it => it.name === f.name)) continue;
     const it = { name: f.name, bytes: null, res: null };
     items.push(it);

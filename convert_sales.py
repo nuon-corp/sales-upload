@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-10d'
+RULES_VERSION = '2026-11-11'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -93,6 +93,23 @@ def load_book(path):
                 row = [None if v == '' else v for v in sh.row_values(i)]
                 ws.append(row if any(v is not None for v in row) else [None])
         return wb
+    if path.lower().endswith('.csv'):
+        import csv, io
+        raw = open(path, 'rb').read()
+        for enc in ('utf-8-sig', 'cp949', 'euc-kr'):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise RuntimeError('CSV 글자 인코딩을 읽지 못했습니다')
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = os.path.splitext(os.path.basename(path))[0][:31] or 'csv'
+        for row in csv.reader(io.StringIO(text)):
+            ws.append([None if v == '' else v for v in row] or [None])
+        return wb
     return openpyxl.load_workbook(path, data_only=True)
 
 
@@ -122,7 +139,9 @@ class Book:
         self.tax_rows = []                           # 부가세 시트에 건별로 쓸 행 [과세구분, 공급가, 부가세]
         self.notes = []   # 확인이 필요한 사항 (가정, 미반영 시트)
         self.info = []    # 참고 안내 (확인된 규칙대로 제외한 것 등)
-        self.companions = {}   # 함께 올린 보조 파일 (예: 11번가 부가세신고내역) {키: [(파일명, wb)]}
+        self.companions = {}   # 함께 올린 보조 파일 (예: 11번가 부가세신고내역) {키: [(파일명, 시트)]}
+        self.used = set()      # 실제로 사용한 보조 파일 이름
+        self.label = ''        # 채널 안 구분(브랜드 등) — 결과 파일명·화면에 붙음
 
     def add(self, sheet_name, code, name, sup, vat):
         if sup == 0 and vat == 0:
@@ -508,8 +527,199 @@ def parse_11st(wb, bk):
         bk.add_tax_gross(ST11_ADJ_TAX, adj_total)
         bk.info.append(f'매출조정금액 {adj_total:,}원을 부가세 시트 {ST11_ADJ_TAX}({TAX_NAME.get(ST11_ADJ_TAX, "")})에서 차감')
     bk.info.append(f'부가세: {fname} 사용')
+    bk.used.add(fname)
     if -adj_total != st11_disc:
         bk.notes.append(f'정산파일 11번가할인({st11_disc:,})과 부가세신고 매출조정({adj_total:,})이 다름 — 확인 필요')
+
+
+# ── 카카오 (톡스토어·선물하기) ───────────────────────────────────────
+# 카카오 판매자번호 → 브랜드 (화면 채널명에 표시). 새 판매자 계정이 생기면 추가
+KAKAO_SELLERS = {'10094': '살림백서', '205510': '아우페', '207416': '헤디안', '230621': '프로클'}
+KAKAO_PAY_TO_TAX = {'카카오페이 카드결제': '17', '신용카드': '17', '현금(카카오머니)': '31', '무통장입금': '31',
+                    '휴대폰 결제': '14', '포인트': '31'}   # 톡스토어 부가세 파일 분류로 확인 (포인트는 대부분 '현금'으로 잡힘)
+KAKAO_VAT_COLS = {'카드': '17', '현금': '31', '휴대폰': '14', '기타': '14'}
+
+
+def parse_kakao(wb, bk):
+    """카카오 정산(판매자번호별) + 부가세 파일(같은 판매자번호).
+    톡스토어: 매출 = 정산기준금액 + 선불배송비 + 반품배송비 − 수수료차감금액(부가세 파일) → 부가세 파일 과세매출과 일치
+              수수료 = 수수료합계 + 큐레이터 서비스수수료 − 수수료차감금액
+    선물하기: 부가세 파일에 없음 → 매출 = 정산기준금액 + 배송비, 수수료 = 수수료합계 (확인 필요)"""
+    ws = next(w for w in wb if has(sheet_words(w), '판매정산금액'))
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '판매정산금액', '정산기준금액', '판매자번호')
+    h = header_index(rows[hi])
+    g = lambda r, k: num(r[h[k]]) if k in h else 0
+    data = [r for r in rows[hi + 1:] if r and r[h['주문번호']] not in (None, '') or (r and r[h['정산구분']] == '배송비')]
+    sellers = {str(r[h['판매자번호']]).split('.')[0] for r in data if r[h['판매자번호']] not in (None, '')}
+    bk.info.append(f"판매자번호 {', '.join(sorted(sellers))}")
+    bk.label = '·'.join(KAKAO_SELLERS.get(x, x) for x in sorted(sellers))
+
+    # 같은 판매자번호의 부가세 파일 찾기
+    vat = None
+    for fname, vws in bk.companions.get('카카오부가세', []):
+        vrows = list(vws.iter_rows(values_only=True))
+        try:
+            vi = find_header(vrows, '수수료차감금액', '과세매출금액', '판매자번호')
+        except StopIteration:
+            continue
+        vh = header_index(vrows[vi])
+        vdata = [r for r in vrows[vi + 1:] if r and r[vh['판매자번호']] not in (None, '')]
+        if {str(r[vh['판매자번호']]).split('.')[0] for r in vdata} & sellers:
+            vat = (fname, vh, vdata)
+            break
+    deduct = defaultdict(int)
+    if vat:
+        fname, vh, vdata = vat
+        for r in vdata:
+            if r[vh['주문번호']] not in (None, ''):
+                deduct[str(r[vh['주문번호']]).split('.')[0]] += num(r[vh['수수료차감금액']])
+        bk.used.add(fname)
+        bk.info.append(f'부가세: {fname} 사용')
+    else:
+        bk.notes.append('같은 판매자번호의 카카오 부가세 파일이 없어 결제수단으로 과세구분을 나눔 — 부가세 파일을 같이 올려 주세요')
+
+    tok_sale = gift_disc = 0
+    done_orders = set()
+    for r in data:
+        is_ship = r[h['정산구분']] == '배송비'
+        code = None if is_ship else r[h['상품번호']]
+        name = '배송비' if is_ship or not r[h['상품명']] else r[h['상품명']]
+        order = str(r[h['주문번호']] or '').split('.')[0]
+        sale = g(r, '정산기준금액') + g(r, '선불배송비') + g(r, '반품배송비')
+        fee = g(r, '수수료합계') + g(r, '큐레이터 서비스수수료')
+        gift = r[h['채널']] != '카카오톡 스토어'
+        if not gift and order and order not in done_orders:
+            sale -= deduct.get(order, 0)
+            fee -= deduct.get(order, 0)
+            done_orders.add(order)
+        bk.add_gross('매출', code, name, sale)
+        bk.add_gross('수수료', code, name, fee)
+        if gift or not vat:
+            bk.add_tax_gross(KAKAO_PAY_TO_TAX.get(str(r[h['결제수단']]).strip(), DEFAULT_TAX), sale)
+        if gift:
+            gift_disc += g(r, '카카오할인금액합계')
+        else:
+            tok_sale += sale
+    if vat:
+        fname, vh, vdata = vat
+        for col, tcode in KAKAO_VAT_COLS.items():
+            if col in vh:
+                bk.add_tax_gross(tcode, sum(num(r[vh[col]]) for r in vdata))
+        vtot = sum(num(r[vh['과세매출금액']]) for r in vdata)
+        if any(num(r[vh['면세매출금액']]) for r in vdata):
+            bk.notes.append('카카오 부가세 파일에 면세매출이 있음 — 처리 규칙 확인 필요')
+        if vtot != tok_sale:
+            bk.notes.append(f'톡스토어 매출({tok_sale:,})과 부가세 파일 과세매출({vtot:,})이 다름 — 같은 판매자·기간 파일인지 확인')
+    if gift_disc:
+        bk.notes.append(f'선물하기 카카오할인 {gift_disc:,}원 — 부가세 자료가 없어 매출·수수료에서 빼지 않음, 처리 확인 필요')
+    if any(r[h['채널']] != '카카오톡 스토어' for r in data):
+        bk.notes.append('선물하기 매출은 정산 파일 결제수단으로 과세구분을 나눔 (카드 17 / 현금·무통장·포인트 31 / 휴대폰 14) — 선물하기 부가세 자료가 있으면 같이 올려 주세요')
+
+
+# ── 토스쇼핑 ──────────────────────────────────────────────────────────
+TOSS_VAT_COLS = {'신용카드 과세 공급가액': '17', '현금영수증 발행 과세 공급가액': '31', '기타 매출 과세 공급가액': '14'}
+TOSS_ADJ_TAX = '14'   # 매출 에누리(토스 부담 할인) 차감 과세구분 — 토스 설명상 '기타 매출'에서 차감
+
+
+def parse_toss(wb, bk):
+    """토스쇼핑 정산 CSV + 부가세 '상세 내역'.
+    매출 = 수수료 기준금액 − 토스 부담 할인 금액 (토스 설명: 매출 에누리는 수수료 내에서 공제)
+    수수료 = 결제 수수료 + 상품 판매 수수료(각 부가세 포함) − 토스 부담 할인 금액
+    부가세 = 상세 내역의 신용카드 17 / 현금영수증 31 / 기타 14 공급가, 매출 에누리는 14에서 차감"""
+    ws = next(w for w in wb if has(sheet_words(w), '수수료 기준금액'))
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '수수료 기준금액', '상품 주문번호')
+    h = header_index(rows[hi])
+    g = lambda r, k: num(r[h[k]]) if k in h and len(r) > h[k] else 0
+    base_t = disc_t = 0
+    for r in rows[hi + 1:]:
+        if not r or r[0] in (None, ''):
+            continue
+        base = g(r, '수수료 기준금액')
+        fsup = -(g(r, '결제 수수료') + g(r, '상품 판매 수수료'))
+        fvat = -(g(r, '결제 수수료 부가세') + g(r, '상품 판매 수수료 부가세'))
+        disc = g(r, '토스 부담 할인 금액') + g(r, '배송비 토스 부담 할인 금액')
+        if not (base or fsup or fvat or disc):
+            continue
+        pid = str(r[h['상품ID']] or '').split('.')[0]
+        code = None if pid in ('', '0') else pid
+        name = r[h['상품명']] or '배송비'
+        bk.add_gross('매출', code, name, base - disc)
+        ds, dv = split_vat(disc)
+        bk.add('수수료', code, name, fsup - ds, fvat - dv)
+        base_t += base; disc_t += disc
+    if disc_t:
+        bk.info.append(f'토스 부담 할인 {disc_t:,}원은 매출·수수료에서 차감')
+
+    cands = []
+    for fname, vws in bk.companions.get('토스부가세', []):
+        vrows = list(vws.iter_rows(values_only=True))
+        vi = find_header(vrows, '주문상품번호', '매출 에누리')
+        vh = header_index(vrows[vi])
+        vdata = [r for r in vrows[vi + 1:] if r and str(r[0] or '').startswith('20')]
+        sup = {k: sum(num(r[vh[k]]) for r in vdata) for k in TOSS_VAT_COLS if k in vh}
+        vat_t = sum(num(r[vh['[참고] 부가가치세(VAT)']]) for r in vdata)
+        enuri = sum(num(r[vh['매출 에누리']]) for r in vdata)
+        free = sum(num(r[vh['면세 공급가액']]) for r in vdata) if '면세 공급가액' in vh else 0
+        cands.append((fname, sup, vat_t, enuri, free))
+    if not cands:
+        bk.notes.append('토스 부가세 상세 내역 파일이 없어 부가세 시트를 비움 — 같은 달 파일을 같이 올려 주세요')
+        return
+    match = [c for c in cands if sum(c[1].values()) + c[2] + c[4] == base_t]
+    fname, sup, vat_t, enuri, free = (match or cands)[0]
+    if not match:
+        bk.notes.append(f'정산 수수료기준금액({base_t:,})과 금액이 맞는 토스 부가세 파일이 없음 — 같은 달 파일인지 확인')
+    if free:
+        bk.notes.append('토스 부가세 파일에 면세 매출이 있음 — 처리 규칙 확인 필요')
+    # 과세구분별 공급가 + 부가세(10%, 합계가 VAT 총액과 같도록 가장 큰 구분에서 보정)
+    parts = {TOSS_VAT_COLS[k]: [v, vat10(v)] for k, v in sup.items() if v}
+    if parts:
+        big = max(parts.values(), key=lambda x: x[0])
+        big[1] += vat_t - sum(x[1] for x in parts.values())
+    for code, (sp, vt) in parts.items():
+        bk.add_tax(code, sp, vt)
+    if enuri:
+        bk.add_tax_gross(TOSS_ADJ_TAX, enuri)
+        bk.info.append(f'매출 에누리 {enuri:,}원을 부가세 시트 {TOSS_ADJ_TAX}({TAX_NAME.get(TOSS_ADJ_TAX, "")})에서 차감')
+    if -enuri != disc_t:
+        bk.notes.append(f'정산 토스 부담 할인({disc_t:,})과 부가세 파일 매출 에누리({enuri:,})가 다름 — 확인 필요')
+    bk.used.add(fname)
+    bk.info.append(f'부가세: {fname} 사용')
+    bk.notes.append('토스쇼핑: 경영지원팀 파일·수수료 세금계산서로 아직 대조 못 함')
+
+
+# ── 포인트·PG 결제 입점몰 (요약/목록 시트) ─────────────────────────────
+POINTMALL_NAME = '(주) 엘지씨엔에스'   # 복지몰(포인트·PG 결제) 입점 정산
+POINTMALL_TAX = {'포인트총액': '14', 'PG총액': '17'}
+
+
+def parse_pointmall(wb, bk):
+    """입점사 정산 '목록' 시트: 매출 = 판매가총액 + 배송비총액 − 할인총액(= 포인트총액 + PG총액)
+    수수료 = 판매사수수료 − (할인총액 − 쿠폰(입점사부담))  → 매출 − 수수료 = 대금지급액"""
+    ws = sheet(wb, '목록') or first_sheet(wb)
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '판매가총액', '판매사수수료(총액)')
+    h = header_index(rows[hi])
+    g = lambda r, k: num(r[h[k]]) if k in h else 0
+    plat_disc = 0
+    for r in rows[hi + 1:]:
+        if not r or r[h['입점사']] in (None, ''):
+            continue
+        name = r[h['주문상품요약']] or '상품'
+        sale = g(r, '판매가총액') + g(r, '배송비총액') - g(r, '할인총액')
+        pdisc = g(r, '할인총액') - g(r, '쿠폰(입점사부담)')
+        bk.add_gross('매출', None, name, sale)
+        bk.add_gross('수수료', None, name, g(r, '판매사수수료(총액)') - pdisc)
+        for col, code in POINTMALL_TAX.items():
+            if g(r, col):
+                bk.add_tax_gross(code, g(r, col))
+        if abs(sale - g(r, '포인트총액') - g(r, 'PG총액')) > 0:
+            bk.notes.append(f"결제금액(포인트+PG)과 매출이 다른 행: {str(name)[:20]}")
+        plat_disc += pdisc
+    if plat_disc:
+        bk.info.append(f'운용사 부담 할인 {plat_disc:,}원은 매출·수수료에서 차감')
+    bk.notes.append(f'{POINTMALL_NAME}: 할인 처리·과세구분(포인트 14 / PG 17) 경영지원팀 확인 필요')
 
 
 # ── 수기 추가 시트 ('추가') ─────────────────────────────────────────
@@ -673,12 +883,17 @@ CHANNELS = [
     ('CJ온스타일', lambda w: has(w, 'CJ온스타일매출'), parse_cj),
     ('롯데ON', lambda w: has(w, '정산대상판매금액') and has(w, '판매자상품명'), parse_lotteon),
     ('11번가', lambda w: has(w, '판매금액합계') and has(w, '공제금액합계') and has(w, '할인쿠폰이용료'), parse_11st),
+    ('카카오', lambda w: has(w, '판매정산금액') and has(w, '카카오할인금액합계'), parse_kakao),
+    ('토스쇼핑', lambda w: has(w, '수수료 기준금액') and has(w, '토스 부담 할인 금액'), parse_toss),
+    (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
 
 # 단독으로는 변환하지 않고, 같은 기간의 본 파일에 붙여 쓰는 보조 파일
 # (키, 판별 함수, 설명, 붙는 채널)
 COMPANIONS = [
     ('11번가부가세', lambda w: has(w, '부가세신고내역상세') and has(w, '[정산]스토어묶음할인'), '11번가 부가세신고내역', '11번가'),
+    ('카카오부가세', lambda w: has(w, '수수료차감금액') and has(w, '과세매출금액') and has(w, '판매자번호'), '카카오 부가세 파일', '카카오'),
+    ('토스부가세', lambda w: has(w, '토스쇼핑 매출 에누리') or (has(w, '기타 매출 과세 공급가액') and has(w, '매출 에누리')), '토스 부가세 상세 내역', '토스쇼핑'),
 ]
 
 
@@ -715,7 +930,7 @@ def write(out, bk):
 
 def new_result(path):
     return {'file': os.path.basename(path), 'status': '', 'channel': '', 'out': '',
-            'sums': {}, 'tax': {}, 'notes': [], 'info': [], 'message': ''}
+            'sums': {}, 'tax': {}, 'notes': [], 'info': [], 'message': '', 'used': []}
 
 
 def scan(path):
@@ -749,9 +964,13 @@ def run_one(path, out_dir, extra, preloaded=None, companions=None):
         apply_extra(wb, bk)
         bk.finalize()
         base = os.path.splitext(os.path.basename(path))[0]
-        out = os.path.join(out_dir, f'업로드_{ch}_{base}.xlsx')
+        chl = f'{ch}({bk.label})' if bk.label else ch   # 화면 표시용 (카카오는 판매자번호로 브랜드 표시)
+        out = os.path.join(out_dir, f'{base}_변환.xlsx')  # 결과 파일명 = 원본 파일명 + _변환
+        n = 2
+        while os.path.exists(out):   # 같은 이름이 있으면 (2), (3)… 붙임
+            out = os.path.join(out_dir, f'{base}_변환({n}).xlsx'); n += 1
         write(out, bk)
-        res.update(status='완료', channel=ch, out=out, notes=bk.notes, info=bk.info)
+        res.update(status='완료', channel=chl, out=out, notes=bk.notes, info=bk.info, used=sorted(bk.used))
         for t in ('매출', '광고', '수수료'):
             rs = bk.rows[t]
             res['sums'][t] = (len(rs), sum(r[2] for r in rs), sum(r[3] for r in rs))
@@ -787,6 +1006,7 @@ def run_batch(paths, out_dir, extra, on_result=None, on_progress=None):
                 comp_info[p] = (key, period, label, target)
                 break
     used = set()
+    name_to_path = {os.path.basename(cp): cp for lst in comp.values() for _, _, cp in lst}
     for i, p in enumerate(paths, 1):
         if p in results or p in comp_info:
             continue
@@ -797,8 +1017,8 @@ def run_batch(paths, out_dir, extra, on_result=None, on_progress=None):
         for (key, per), lst in comp.items():
             if per == period or (not per or not period):
                 mine.setdefault(key, []).extend((n, w) for n, w, _ in lst)
-                used.update(cp for _, _, cp in lst)
         results[p] = run_one(p, out_dir, extra, preloaded=(wb, words, period), companions=mine)
+        used.update(name_to_path[n] for n in results[p].get('used', []) if n in name_to_path)
         if on_result:
             on_result(p, results[p])
     for p, (key, period, label, target) in comp_info.items():
@@ -807,7 +1027,7 @@ def run_batch(paths, out_dir, extra, on_result=None, on_progress=None):
         if p in used:
             r.update(status='보조', message=f'{label} — {target} 정산 파일과 함께 처리됨')
         else:
-            r.update(status='건너뜀', message=f'{label} — 같은 기간({period})의 {target} 정산 파일을 같이 추가하세요')
+            r.update(status='건너뜀', message=f'{label} — 짝이 되는 {target} 정산 파일(같은 계정·기간)을 찾지 못함, 같이 추가하세요')
         results[p] = r
         if on_result:
             on_result(p, r)
