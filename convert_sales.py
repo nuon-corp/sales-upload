@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-11f'
+RULES_VERSION = '2026-11-11h'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -110,7 +110,34 @@ def load_book(path):
         for row in csv.reader(io.StringIO(text)):
             ws.append([None if v == '' else v for v in row] or [None])
         return wb
-    return openpyxl.load_workbook(path, data_only=True)
+    try:
+        return openpyxl.load_workbook(path, data_only=True)
+    except ValueError:
+        # 일부 사이트 다운로드는 셀 주소에 행 번호가 빠져 있음(r="A") → 고쳐서 다시 읽기
+        return openpyxl.load_workbook(_fix_cell_refs(path), data_only=True)
+
+
+def _fix_cell_refs(path):
+    import io, zipfile
+    src = zipfile.ZipFile(path)
+    out = io.BytesIO()
+    dst = zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED)
+    row_re = re.compile(r'<row\b([^>]*)>(.*?)</row>', re.S)
+    for info in src.infolist():
+        data = src.read(info.filename)
+        if info.filename.startswith('xl/worksheets/') and info.filename.endswith('.xml'):
+            text = data.decode('utf-8')
+            n = [0]
+            def fix_row(m):
+                rn = re.search(r'\br="(\d+)"', m.group(1))
+                n[0] = int(rn.group(1)) if rn else n[0] + 1
+                body = re.sub(r'(<c\b[^>]*?\br=")([A-Z]+)(")', lambda c: f'{c.group(1)}{c.group(2)}{n[0]}{c.group(3)}', m.group(2))
+                return f'<row{m.group(1)}>{body}</row>'
+            data = row_re.sub(fix_row, text).encode('utf-8')
+        dst.writestr(info, data)
+    dst.close()
+    out.seek(0)
+    return out
 
 
 def period_of(words):
@@ -876,6 +903,125 @@ def has(words, text):
     return any(text in w for w in words)
 
 
+# ── 2026-11-11 추가 매출처 ──────────────────────────────────────────────
+# 알리익스프레스 정산 기간 ID 안의 판매자 번호 → 브랜드 (결과 파일·화면 표시용)
+ALI_ACCOUNTS = {'4866425162': '살림백서', '6114755911': '아우페', '6472674923': '프로클'}
+ALI_TAX = '14'          # 결제수단 정보가 없어 건별로 넣음 (경영지원팀 확인 필요)
+
+
+def _won(v):
+    """'₩ 46,691' / '-1,082' → 정수."""
+    t = str(v if v is not None else '').replace('₩', '').replace(',', '').strip()
+    try:
+        return int(float(t)) if t not in ('', '-') else 0
+    except ValueError:
+        return 0
+
+
+def parse_ali(wb, bk):
+    """알리익스프레스: 거래명세서 행 단위. 매출 = '판매'(상품 결제액·환불), 수수료 = 'AliExpress 비용'
+    (세금 포함 금액은 ÷1.1, 제휴 수수료는 공급가·부가세 행을 주문별로 묶음), 광고 = 광고 시트 비용 합계."""
+    ws = sheet(wb, 'Aliexpress', '비용 항목명', '수수료 항목명', '총액(KRW)')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '비용 항목명', '수수료 항목명', '총액(KRW)')
+    h = header_index(rows[hi])
+    accounts = set()
+    aff = defaultdict(lambda: [0, 0, ''])   # (주문 ID, 제품 ID) → [제휴 수수료, 제휴 수수료 부가세, 상품명]
+    for r in rows[hi + 1:]:
+        kind, item = r[h['비용 항목명']], str(r[h['수수료 항목명']] or '')
+        if not kind:
+            continue
+        m = re.search(r'SETTLE_(\d+)_', str(r[h['정산 기간 ID']] or ''))
+        if m:
+            accounts.add(m.group(1))
+        code, name, amt = r[h['제품 ID']], r[h['아이템 이름']], _won(r[h['총액(KRW)']])
+        if kind == '판매':
+            bk.add_gross('매출', code, name, amt)
+        elif item.startswith('제휴 수수료'):
+            k = (r[h['주문 ID']], code)
+            aff[k][1 if '부가세' in item else 0] += -amt
+            aff[k][2] = name
+        else:
+            bk.add_gross('수수료', code, name, -amt)
+    for (_, code), (sup, vat, name) in aff.items():
+        bk.add('수수료', code, name, sup, vat)
+    bk.label = '·'.join(ALI_ACCOUNTS.get(a, a) for a in sorted(accounts))
+    bk.tax_from_sales(ALI_TAX)
+    ad = sheet(wb, '광고', '비용', '클릭 수')
+    if ad:
+        arows = list(ad.iter_rows(values_only=True))
+        ah = header_index(arows[find_header(arows, '비용', '클릭 수')])
+        total = sum(_won(r[ah['비용']]) for r in arows if re.match(r'\d{4}-\d{2}-\d{2}', str(r[ah['날짜']] or '')))
+        if total:
+            bk.add_gross('광고', None, '알리익스프레스 광고비', total)
+    bk.info.append(f'부가세 시트: 결제수단 정보가 없어 {TAX_NAME[ALI_TAX]}({ALI_TAX})로 넣음')
+
+
+def parse_welstory(wb, bk):
+    """삼성웰스토리(웰스토리몰, 매입): 매출 = 최종매입공급금액/VAT, 수수료 없음. 세금계산서 매출."""
+    ws = sheet(wb, '§', '최종매입공급금액', '최종매입VAT')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '최종매입공급금액', '최종매입VAT')
+    h = header_index(rows[hi])
+    for r in rows[hi + 1:]:
+        if not r[h['주문번호']]:
+            continue
+        taxable = r[h['과면세']] != '면세'
+        bk.add('매출', r[h['업체상품번호']], r[h['상품명']], num(r[h['최종매입공급금액']]),
+               num(r[h['최종매입VAT']]) if taxable else 0)
+    bk.info.append('세금계산서 매출이라 부가세 시트는 비움')
+
+
+def parse_welfare(wb, bk):
+    """복지샵 확정상세내역(매입): 매출 = 실정산금액(부가세 포함, ÷1.1), 수수료 없음. 세금계산서 매출."""
+    ws = sheet(wb, '확정상세', '실정산금액')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = next(i for i, r in enumerate(rows) if r and '상품명' in r and '주문번호' in r)
+    top = [str(v or '').replace('\n', '') for v in rows[hi]]
+    sub = [str(v or '') for v in rows[hi + 1]]
+    c_name, c_code, c_tax = top.index('상품명'), top.index('상품코드'), next(i for i, v in enumerate(top) if v.startswith('면과세'))
+    c_amt = sub.index('실정산금액')
+    for r in rows[hi + 2:]:
+        if r[0] == '합계' or not r[c_name]:
+            continue
+        bk.add_gross('매출', r[c_code], r[c_name], num(r[c_amt]), r[c_tax] != '면세')
+    bk.info.append('세금계산서 매출이라 부가세 시트는 비움')
+
+
+CONSIGN_PAY_TO_TAX = {'카드': '17', '현금': '31', '포인트': '14', '기타': '14'}
+
+
+def parse_consign(wb, bk):
+    """위탁몰(매출신고액 양식): 매출 = 총 결제금액 공급가/세액, 수수료 = 위탁수수료 공급가액/세액,
+    부가세 = 카드 17 / 현금 31 / 포인트·기타 14."""
+    ws = sheet(wb, '§', '총 결제금액(매출신고액)', '위탁수수료 공급가액')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '총 결제금액(매출신고액)', '위탁수수료 공급가액')
+    h = header_index(rows[hi])
+    names = {}   # 상세 시트에 상품명이 비어 있으면 다른 시트의 '품목 명칭'으로 채움
+    for other in wb.worksheets:
+        orows = list(other.iter_rows(values_only=True))
+        try:
+            oh = header_index(orows[find_header(orows, '주문번호', '품목 명칭')])
+        except StopIteration:
+            continue
+        for r in orows:
+            if isdigit(r[oh['주문번호']]):
+                names[str(r[oh['주문번호']])] = r[oh['품목 명칭']]
+    for r in rows[hi + 1:]:
+        if not isdigit(r[h['No']]):
+            continue
+        name = r[h['상품명']] or names.get(str(r[h['주문번호']]), '')
+        bk.add('매출', None, name, num(r[h['결제금액 공급가']]), num(r[h['결제금액 세액']]))
+        bk.add('수수료', None, name, num(r[h['위탁수수료 공급가액']]), num(r[h['위탁수수료 세액']]))
+        pays = [(code, num(r[h[pay]])) for pay, code in CONSIGN_PAY_TO_TAX.items() if pay in h and num(r[h[pay]])]
+        if len(pays) == 1:   # 결제수단 하나면 매출 행 공급가·세액 그대로 (매출 시트와 원 단위 일치)
+            bk.add_tax_row(pays[0][0], num(r[h['결제금액 공급가']]), num(r[h['결제금액 세액']]))
+        else:
+            for code, amt in pays:
+                bk.add_tax_row(code, *split_vat(amt))
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
@@ -907,7 +1053,7 @@ CHANNEL_LIST = [
     ('(주)더블유쇼핑', None, ''),
     ('주식회사 핌아시아', None, ''),
     ('네이버파이낸셜(주)_살림백서', None, ''),
-    ('알리익스프레스코리아 유한회사', None, ''),
+    ('알리익스프레스코리아 유한회사', '알리익스프레스', '살림백서 계정으로 추정'),
     ('알리익스프레스코리아 유한회사_튼튼백서', None, ''),
     ('네이버파이낸셜(주)_튼튼백서', None, ''),
     ('(주)카카오_살림백서(카카오톡스토어)', '카카오', ''),
@@ -918,9 +1064,9 @@ CHANNEL_LIST = [
     ('넛지헬스케어(주)', '넛지헬스케어캐시딜', ''),
     ('네이버파이낸셜(주)_아우페', None, ''),
     ('(주)카카오_아우페(카카오톡스토어)', '카카오', ''),
-    ('주식회사 현대이지웰', None, ''),
+    ('주식회사 현대이지웰', '복지샵', '복지샵 파일로 추정'),
     ('(주)카카오_튼튼백서(카카오톡스토어)', None, ''),
-    ('알리익스프레스코리아 유한회사(아우페)_살림백서', None, ''),
+    ('알리익스프레스코리아 유한회사(아우페)_살림백서', '알리익스프레스', '아우페 계정으로 추정'),
     ('(주) 비바리퍼블리카(토스)', '토스쇼핑', ''),
     ('(주)카카오_헤디안(카카오톡스토어)', '카카오', ''),
     ('씨제이이엔엠(CJ오쇼핑)_살림백서', 'CJ온스타일', ''),
@@ -932,9 +1078,9 @@ CHANNEL_LIST = [
     ('지마켓(newnuon)', None, ''),
     ('지마켓글로벌 유한책임회사(newnuon)', None, ''),
     ('주식회사 티앤케이팩토리', None, ''),
-    ('알리익스프레스(프로클)', None, ''),
+    ('알리익스프레스(프로클)', '알리익스프레스', ''),
     ('테무(프로클)', None, ''),
-    ('삼성웰스토리(주)', None, ''),
+    ('삼성웰스토리(주)', '삼성웰스토리', ''),
     ('(주)카카오_프로클(카카오톡스토어)', '카카오', ''),
     ('주식회사 화해글로벌', None, ''),
 ]
@@ -942,6 +1088,12 @@ CHANNEL_LIST = [
 # 원본(raw) 파일로 아직 검증 안 한 매출처 — 화면 왼쪽 목록에 '원본 확인 중' 표시.
 # 원본으로 확인이 끝나면 여기서 이름을 지우면 됨.
 RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
+
+# 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰'}
+
+# 변환 규칙은 있지만 화면 목록에서 숨길 것
+CHANNEL_HIDE = {'NS홈쇼핑'}
 
 CHANNELS = [
     # (이름, 판별 함수, 변환 함수)
@@ -956,6 +1108,10 @@ CHANNELS = [
     ('11번가', lambda w: has(w, '판매금액합계') and has(w, '공제금액합계') and has(w, '할인쿠폰이용료'), parse_11st),
     ('카카오', lambda w: has(w, '판매정산금액') and has(w, '카카오할인금액합계'), parse_kakao),
     ('토스쇼핑', lambda w: has(w, '수수료 기준금액') and has(w, '토스 부담 할인 금액'), parse_toss),
+    ('알리익스프레스', lambda w: has(w, '비용 항목명') and has(w, '수수료 항목명') and has(w, '총액(KRW)'), parse_ali),
+    ('삼성웰스토리', lambda w: has(w, '최종매입공급금액') and has(w, '최종매입VAT'), parse_welstory),
+    ('복지샵', lambda w: has(w, '복지샵') and has(w, '실정산금액'), parse_welfare),
+    ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
 

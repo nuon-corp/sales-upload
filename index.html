@@ -94,7 +94,7 @@
     <h2>매출처 변환 현황</h2>
     <p class="sub" id="chcount">불러오는 중…</p>
     <ul id="chlist"></ul>
-    <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>'원본 확인 중'은 원본 파일로 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
+    <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>노란 표시가 있는 곳은 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
   </aside>
   <main>
 
@@ -170,6 +170,7 @@ function showChannels() {
       const tag = (txt, k) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; li.appendChild(t); };
       if (c.vat) tag('부가세 시트 같이 넣기');
       if (c.pending) tag('원본 확인 중', 'warn');
+      if (c.confirm) tag('경영지원팀 확인 중', 'warn');
       ul.appendChild(li);
     }
   };
@@ -196,9 +197,12 @@ def _channels():
     rules = [c[0] for c in cs.CHANNELS]
     def item(name, rule, memo=''):
         return {'name': name, 'rule': rule, 'memo': memo,
-                'vat': bool(rule) and rule in comp, 'pending': bool(rule) and rule in pend}
+                'vat': bool(rule) and rule in comp, 'pending': bool(rule) and rule in pend,
+                'confirm': bool(rule) and rule in getattr(cs, 'RULE_PENDING', ())}
     full = getattr(cs, 'CHANNEL_LIST', None) or [(r, r, '') for r in rules]
     out = [item(n, r if r in rules else None, m) for n, r, m in full]
+    listed = {c[1] for c in full} | set(getattr(cs, 'CHANNEL_HIDE', ()))
+    out += [item(r, r, '아마란스 매출처 이름 미지정') for r in rules if r not in listed]
     try:
         extra, _ = cs.load_config()
         out += [item(c[0], c[0], '채널설정.xlsx') for c in extra]
