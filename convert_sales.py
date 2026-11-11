@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-11b'
+RULES_VERSION = '2026-11-11f'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -127,8 +127,14 @@ def first_sheet(wb):
     return next((ws for ws in wb if not ws.title.replace(' ', '').startswith('추가')), wb.worksheets[0])
 
 
-def sheet(wb, prefix):
-    return next((s for s in wb if s.title.replace(' ', '').startswith(prefix.replace(' ', ''))), None)
+def sheet(wb, prefix, *need):
+    """시트 찾기: 이름이 prefix로 시작하는 시트 → 없으면 열 제목(need)이 모두 들어 있는 시트.
+    그래서 원본 시트 이름이 바뀌어도 열 제목으로 찾아감."""
+    ws = next((s for s in wb if s.title.replace(' ', '').startswith(prefix.replace(' ', ''))), None)
+    if ws is not None or not need:
+        return ws
+    return next((s for s in wb if not s.title.replace(' ', '').startswith('추가')
+                 and all(has(sheet_words(s), k) for k in need)), None)
 
 
 class Book:
@@ -180,7 +186,7 @@ class Book:
 # ── 채널별 변환 ────────────────────────────────────────────────────────
 def parse_sk(wb, bk):
     """SK스토아(위탁): 매출 = 고객결제금액, 수수료 = 위수탁수수료(공급가/세액)."""
-    ws = sheet(wb, '수수료')
+    ws = sheet(wb, '수수료', '위수탁수수료(공급가)', '고객결제금액')
     hdr = None
     for r in ws.iter_rows(values_only=True):
         if r[0] == 'No' and r[1] == '업체코드' and '주문번호' in r:
@@ -201,7 +207,7 @@ def parse_sk(wb, bk):
 
 def parse_ns(wb, bk):
     """NS홈쇼핑(특약매입): 매출 = 매출금액-반품금액, 부가세 = 단가부가세×수량, 광고 = 쇼핑북광고비."""
-    ws = sheet(wb, '품목별')
+    ws = sheet(wb, '품목별', '상품코드', '매출금액')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '상품코드', '매출금액')
     h = header_index(rows[hi])
@@ -212,7 +218,7 @@ def parse_ns(wb, bk):
         sup = num(r[h['매출금액']]) - num(r[h['반품금액']])
         vat = 0 if r[h['과세구분']] == '면세' else num(r[h['부가세']]) * qty
         bk.add('매출', r[h['상품코드']], r[h['상품명']], sup, vat)
-    ad = sheet(wb, '쇼핑북광고비')
+    ad = sheet(wb, '쇼핑북광고비', '광고비', '상품코드')
     if ad:
         rows = list(ad.iter_rows(values_only=True))
         hi = find_header(rows, '상품코드', '광고비')
@@ -221,7 +227,7 @@ def parse_ns(wb, bk):
             if r[h['상품코드']] and num(r[h['광고비']]):
                 amt = num(r[h['광고비']])
                 bk.add('광고', r[h['상품코드']], r[h['상품명']], amt, vat10(amt))
-    ship = sheet(wb, '고객부담배송비')
+    ship = sheet(wb, '고객부담배송비', '배송비 합계')
     if ship:
         srows = list(ship.iter_rows(values_only=True))
         si = next((i for i, r in enumerate(srows) if r and '배송비 합계' in r), None)
@@ -261,7 +267,7 @@ def parse_nudge(wb, bk):
 
 def parse_ohouse(wb, bk):
     """오늘의집: 매출·수수료 = 품목별 내역 행 단위, 할인 = 부가세신고 화면의 매출할인, 부가세 = 결제수단별 합계."""
-    vat_ws = sheet(wb, 'VAT')
+    vat_ws = sheet(wb, 'VAT', '주문옵션', '결제금액', '결제수단')
     vrows = list(vat_ws.iter_rows(values_only=True))
     vh = header_index(vrows[find_header(vrows, '주문옵션', '결제금액', '결제수단')])
     opt_code = {}
@@ -278,7 +284,7 @@ def parse_ohouse(wb, bk):
         if amt:
             bk.add_tax_gross(OHOUSE_PAY_TO_TAX.get(r[vh['결제수단']], DEFAULT_TAX), amt)
 
-    ws = sheet(wb, '품목별')
+    ws = sheet(wb, '품목별', '주문옵션번호', '상품명')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '주문옵션번호', '상품명')
     h = header_index(rows[hi])
@@ -301,14 +307,14 @@ def parse_ohouse(wb, bk):
     for name, amt in discounts:   # 오늘의집 부담 할인: 결제금액·수수료 같은 금액만큼 감소
         bk.add_gross('매출', None, name, amt)
         bk.add_gross('수수료', None, name, amt)
-    ad = sheet(wb, '광고비')
+    ad = sheet(wb, '광고비', '광고유형', '유상 광고비')
     if ad and any((isinstance(v, (int, float)) and v) or (isdigit(v) and int(v)) for r in ad.iter_rows(values_only=True) for v in r[3:4]):
         bk.info.append('광고비 시트는 경영지원팀 방식대로 업로드에서 제외')
 
 
 def parse_gongyoung(wb, bk):
     """공영홈쇼핑: 상품별매출내역(차수별 행) — 매출순금액/VAT, 수수료금액/VAT 그대로. 광고 = 카드무이자 협력사부담."""
-    ws = sheet(wb, '품목별')
+    ws = sheet(wb, '품목별', '상품ID', '매출순금액')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '상품ID', '매출순금액')
     h = header_index(rows[hi])
@@ -319,7 +325,7 @@ def parse_gongyoung(wb, bk):
         bk.add('매출', code, name, num(r[h['매출순금액']]), num(r[h['매출순금액VAT']]))
         bk.add('수수료', code, name, num(r[h['수수료금액']]), num(r[h['수수료VAT']]))
     bk.tax_from_sales(HOMESHOP_TAX)
-    mu = sheet(wb, '무이자')
+    mu = sheet(wb, '무이자', '상품번호', '협력사부담금액')
     if mu:
         rows = list(mu.iter_rows(values_only=True))
         h = header_index(rows[find_header(rows, '상품번호', '협력사부담금액')])
@@ -336,7 +342,7 @@ def parse_gongyoung(wb, bk):
 
 def parse_woori(wb, bk):
     """우리홈쇼핑(롯데홈쇼핑): 방송 수수료매출현황(VAT별도) — 매출 = 판매금액, 수수료 = 매입수수료, 부가세 10%."""
-    ws = sheet(wb, '품목별')
+    ws = sheet(wb, '품목별', '판매금액', '매입수수료')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '주문번호', '판매금액', '매입수수료')
     h = header_index(rows[hi])
@@ -355,7 +361,7 @@ def parse_woori(wb, bk):
 
 def parse_cj(wb, bk):
     """CJ온스타일: 수수료 매출 일별내역 — 소비자공급가/부가세, CJ수수료/부가세 그대로. 광고 = 공제내역의 광고비."""
-    ws = sheet(wb, '건별매출')
+    ws = sheet(wb, '건별매출', '판매상품명', 'CJ온스타일매출(수수료매출)')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, 'No', '상품코드', '판매상품명')
     h = header_index(rows[hi])
@@ -367,7 +373,7 @@ def parse_cj(wb, bk):
         bk.add('매출', code, name, num(r[base]), num(r[base + 1]))
         bk.add('수수료', code, name, num(r[cj]), num(r[cj + 1]))
     bk.tax_from_sales(HOMESHOP_TAX)
-    gj = sheet(wb, '공제내역(')
+    gj = sheet(wb, '공제내역(', '공제명', '공제금액')
     if gj:
         rows = list(gj.iter_rows(values_only=True))
         h = header_index(rows[find_header(rows, '공제명', '공제금액')])
@@ -393,7 +399,7 @@ LOTTEON_PAY_TO_TAX = {'현금영수증': '31', '신용카드': '17', '휴대폰'
 def parse_lotteon(wb, bk):
     """롯데ON(롯데쇼핑 중개): 매출 = 정산대상판매금액(배송비 포함), 수수료 = 총 수수료 합계, 둘 다 행별 ÷1.1.
     부가세 = 부가세신고자료조회의 결제수단별 금액 (현금영수증 31 / 신용카드 17 / 휴대폰·기타 14)."""
-    ws = sheet(wb, '품목별')
+    ws = sheet(wb, '품목별', '판매자상품명', '정산대상판매금액')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '판매자상품명', '정산대상판매금액')
     h = header_index(rows[hi])
@@ -404,7 +410,7 @@ def parse_lotteon(wb, bk):
         taxable = r[h['과세유형']] != '면세'
         bk.add_gross('매출', code, name, num(r[h['정산대상판매금액']]), taxable)
         bk.add_gross('수수료', code, name, num(r[h['총 수수료 합계']]))
-    vs = sheet(wb, 'VAT')
+    vs = sheet(wb, 'VAT', '총매출금액', '신용카드', '현금영수증')
     vrows = list(vs.iter_rows(values_only=True))
     vi = find_header(vrows, '총매출금액', '신용카드', '현금영수증')
     vh = header_index(vrows[vi])
@@ -696,7 +702,7 @@ POINTMALL_TAX = {'포인트총액': '14', 'PG총액': '17'}
 def parse_pointmall(wb, bk):
     """입점사 정산 '목록' 시트: 매출 = 판매가총액 + 배송비총액 − 할인총액(= 포인트총액 + PG총액)
     수수료 = 판매사수수료 − (할인총액 − 쿠폰(입점사부담))  → 매출 − 수수료 = 대금지급액"""
-    ws = sheet(wb, '목록') or first_sheet(wb)
+    ws = sheet(wb, '목록', '주문상품요약', '판매사수수료(총액)') or first_sheet(wb)
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '판매가총액', '판매사수수료(총액)')
     h = header_index(rows[hi])
@@ -852,7 +858,7 @@ def parse_config(wb, bk, cfg, pay_map):
 # ── 채널 인식 (파일 내용 기준) ─────────────────────────────────────────
 def sheet_words(ws):
     words = {'#' + ws.title.replace(' ', '')}
-    for r in ws.iter_rows(max_row=40, values_only=True):
+    for r in ws.iter_rows(max_row=60, values_only=True):
         for v in r:
             if isinstance(v, str):
                 words.add(v.strip())
@@ -869,6 +875,73 @@ def fingerprint(wb):
 def has(words, text):
     return any(text in w for w in words)
 
+
+# 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
+# (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
+# 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
+CHANNEL_LIST = [
+    ('쿠팡(주)', None, ''),
+    ('지마켓글로벌 유한책임회사(옥션)', None, ''),
+    ('지마켓', None, ''),
+    ('11번가(십일번가)', '11번가', ''),
+    ('씨제이이엔엠(CJ오쇼핑)', 'CJ온스타일', ''),
+    ('(주)공영홈쇼핑', '공영홈쇼핑', ''),
+    ('(주)홈앤쇼핑', None, ''),
+    ('쿠팡 주식회사(로켓배송)', None, ''),
+    ('롯데닷컴-롯데쇼핑(주)e커머스사업본부', '롯데ON', ''),
+    ('(주)우리홈쇼핑', '우리홈쇼핑', ''),
+    ('(주)현대홈쇼핑', None, ''),
+    ('(주)에스에스지닷컴', None, ''),
+    ('(주)카카오', None, ''),
+    ('네이버파이낸셜(주)', None, ''),
+    ('에스케이스토아 주식회사', 'SK스토아', ''),
+    ('엔에이치엔페이코(주)', None, ''),
+    ('(주)티알엔', None, ''),
+    ('Qoo10(큐텐)', None, ''),
+    ('주식회사 레브잇(올웨이즈)', None, ''),
+    ('(주)버킷플레이스', '오늘의집', ''),
+    ('네이버페이(자사몰)', None, ''),
+    ('지마켓-지마켓(프로클)', None, ''),
+    ('지마켓-옥션(프로클)', None, ''),
+    ('(주)지에스리테일홈쇼핑', None, ''),
+    ('(주)더블유쇼핑', None, ''),
+    ('주식회사 핌아시아', None, ''),
+    ('네이버파이낸셜(주)_살림백서', None, ''),
+    ('알리익스프레스코리아 유한회사', None, ''),
+    ('알리익스프레스코리아 유한회사_튼튼백서', None, ''),
+    ('네이버파이낸셜(주)_튼튼백서', None, ''),
+    ('(주)카카오_살림백서(카카오톡스토어)', '카카오', ''),
+    ('(주)카카오_살림백서(선물하기)', None, '카카오 파일에 같이 들어옴 · 따로 나누기·부가세 자료 확인 필요'),
+    ('네이버페이(살림백서)_np_hsuwx956659', None, ''),
+    ('네이버페이(살림백서_np_fvctr791550)', None, ''),
+    ('(주) 엘지씨엔에스', '(주) 엘지씨엔에스', ''),
+    ('넛지헬스케어(주)', '넛지헬스케어캐시딜', ''),
+    ('네이버파이낸셜(주)_아우페', None, ''),
+    ('(주)카카오_아우페(카카오톡스토어)', '카카오', ''),
+    ('주식회사 현대이지웰', None, ''),
+    ('(주)카카오_튼튼백서(카카오톡스토어)', None, ''),
+    ('알리익스프레스코리아 유한회사(아우페)_살림백서', None, ''),
+    ('(주) 비바리퍼블리카(토스)', '토스쇼핑', ''),
+    ('(주)카카오_헤디안(카카오톡스토어)', '카카오', ''),
+    ('씨제이이엔엠(CJ오쇼핑)_살림백서', 'CJ온스타일', ''),
+    ('(주)제이슨그룹', None, ''),
+    ('테무(TEMU)', None, ''),
+    ('마켓컬리_살림백서', None, ''),
+    ('에스케이엠앤서비스 주식회사(베네피아)', None, ''),
+    ('테무(살림백서)', None, ''),
+    ('지마켓(newnuon)', None, ''),
+    ('지마켓글로벌 유한책임회사(newnuon)', None, ''),
+    ('주식회사 티앤케이팩토리', None, ''),
+    ('알리익스프레스(프로클)', None, ''),
+    ('테무(프로클)', None, ''),
+    ('삼성웰스토리(주)', None, ''),
+    ('(주)카카오_프로클(카카오톡스토어)', '카카오', ''),
+    ('주식회사 화해글로벌', None, ''),
+]
+
+# 원본(raw) 파일로 아직 검증 안 한 매출처 — 화면 왼쪽 목록에 '원본 확인 중' 표시.
+# 원본으로 확인이 끝나면 여기서 이름을 지우면 됨.
+RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
 
 CHANNELS = [
     # (이름, 판별 함수, 변환 함수)

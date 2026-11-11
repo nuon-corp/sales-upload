@@ -14,7 +14,27 @@
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 15px/1.55 "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif; }
-  .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 16px 48px; }
+  .wrap { max-width: 1360px; margin: 0 auto; padding: 28px 16px 48px; }
+  .layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 16px; align-items: start; }
+  .side { position: sticky; top: 16px; padding: 16px; max-height: calc(100vh - 32px); overflow-y: auto; }
+  .side li.grp { font-size: 12px; font-weight: 700; color: var(--muted); padding: 14px 0 4px; border-top: 0; }
+  .side li.grp.ok { color: #1e7a3c; }
+  .side li.grp:first-child { padding-top: 0; }
+  .side li.no:not(.grp) { color: var(--muted); font-size: 13px; padding: 5px 0; }
+  .side h2 { font-size: 14px; margin: 0 0 4px; }
+  .side .sub { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  .side ul { list-style: none; margin: 0; padding: 0; }
+  .side li { padding: 7px 0; border-top: 1px solid var(--line); font-size: 14px; }
+  .side li:first-child { border-top: 0; }
+  .side .tag { display: inline-block; margin-top: 3px; font-size: 11.5px; color: var(--aux-ink); background: var(--aux);
+               border-radius: 6px; padding: 1px 6px; }
+  .side .tag { display: block; width: fit-content; }
+  .side .tag.warn { color: #8a5a00; background: #fff4d6; }
+  .side .acc { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .side .foot { color: var(--muted); font-size: 12px; margin: 12px 0 0; line-height: 1.5; }
+  main { min-width: 0; }
+  .tscroll { overflow-x: auto; }
+  @media (max-width: 860px) { .layout { grid-template-columns: 1fr; } .side { position: static; max-height: 360px; } }
   header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 16px; margin-bottom: 18px; }
   h1 { font-size: 22px; margin: 0; letter-spacing: -0.02em; }
   .ver { color: var(--muted); font-size: 13px; }
@@ -69,6 +89,15 @@
     <span class="ver" id="ver">규칙 불러오는 중…</span>
   </header>
 
+  <div class="layout">
+  <aside class="panel side" aria-label="변환 가능한 매출처">
+    <h2>매출처 변환 현황</h2>
+    <p class="sub" id="chcount">불러오는 중…</p>
+    <ul id="chlist"></ul>
+    <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>'원본 확인 중'은 원본 파일로 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
+  </aside>
+  <main>
+
   <div class="panel">
     <div id="drop" tabindex="0" role="button" aria-label="정산 엑셀 파일 추가">
       <strong>채널 정산 엑셀을 여기에 끌어다 놓거나 클릭해서 선택하세요</strong>
@@ -86,18 +115,20 @@
   </div>
 
   <div class="panel table-wrap">
-    <table>
+    <div class="tscroll"><table>
       <thead><tr>
         <th>원본 파일</th><th>채널</th><th>상태</th>
         <th style="text-align:right">매출 (부가세 포함)</th><th style="text-align:right">수수료</th><th style="text-align:right">광고</th>
         <th>안내</th><th></th>
       </tr></thead>
       <tbody id="rows"><tr><td colspan="8" class="empty">추가한 파일이 없어요</td></tr></tbody>
-    </table>
+    </table></div>
   </div>
 
   <div class="panel">
     <pre id="detail">행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.</pre>
+  </div>
+  </main>
   </div>
 </div>
 
@@ -121,6 +152,31 @@ const won = n => (n || 0).toLocaleString('ko-KR');
 
 function setStatus(html) { $('status').innerHTML = html; }
 
+function showChannels() {
+  let list = [];
+  try { list = JSON.parse(py.globals.get('_channels')()); } catch (e) { console.warn(e); }
+  const ok = list.filter(c => c.rule), no = list.filter(c => !c.rule);
+  $('chcount').textContent = `전체 ${list.length}곳 · 변환 가능 ${ok.length} · 아직 안 됨 ${no.length}`;
+  const ul = $('chlist'); ul.innerHTML = '';
+  const group = (title, arr, cls) => {
+    if (!arr.length) return;
+    const h = document.createElement('li'); h.className = 'grp ' + cls; h.textContent = `${title} (${arr.length})`; ul.appendChild(h);
+    for (const c of arr) {
+      const li = document.createElement('li'); li.className = cls;
+      li.appendChild(document.createTextNode(c.name));
+      const sub = (txt) => { const a = document.createElement('span'); a.className = 'acc'; a.textContent = txt; li.appendChild(a); };
+      if (c.rule && c.rule !== c.name) sub('규칙: ' + c.rule);
+      if (c.memo) sub(c.memo);
+      const tag = (txt, k) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; li.appendChild(t); };
+      if (c.vat) tag('부가세 시트 같이 넣기');
+      if (c.pending) tag('원본 확인 중', 'warn');
+      ul.appendChild(li);
+    }
+  };
+  group('변환 가능', ok, 'ok');
+  group('아직 안 됨', no, 'no');
+}
+
 const BRIDGE = `
 import sys, os, io, json, zipfile, shutil, site
 def _install(name, data):
@@ -132,6 +188,23 @@ def _setup():
         del sys.modules['convert_sales']
     import convert_sales
     return convert_sales.RULES_VERSION
+
+def _channels():
+    import convert_sales as cs
+    comp = {c[3] for c in getattr(cs, 'COMPANIONS', [])}
+    pend = getattr(cs, 'RAW_PENDING', ())
+    rules = [c[0] for c in cs.CHANNELS]
+    def item(name, rule, memo=''):
+        return {'name': name, 'rule': rule, 'memo': memo,
+                'vat': bool(rule) and rule in comp, 'pending': bool(rule) and rule in pend}
+    full = getattr(cs, 'CHANNEL_LIST', None) or [(r, r, '') for r in rules]
+    out = [item(n, r if r in rules else None, m) for n, r, m in full]
+    try:
+        extra, _ = cs.load_config()
+        out += [item(c[0], c[0], '채널설정.xlsx') for c in extra]
+    except Exception:
+        pass
+    return json.dumps(out, ensure_ascii=False)
 
 def _run(names):
     import convert_sales as cs
@@ -185,6 +258,7 @@ async function boot() {
     py.FS.writeFile('/app/' + TEMPLATE_NAME, await fetchBytes(encodeURI(TEMPLATE_NAME)));
     try { py.FS.writeFile('/app/채널설정.xlsx', await fetchBytes(encodeURI('채널설정.xlsx'))); } catch (e) { /* 선택 파일 */ }
     const ver = py.globals.get('_setup')();
+    showChannels();
     $('ver').textContent = `규칙 버전 ${ver}`;
     if (RULES_FILE !== 'convert_sales.py') {
       const b = document.createElement('div'); b.className = 'testbar';
@@ -280,6 +354,7 @@ async function run() {
     try {
       py.FS.writeFile('/app/convert_sales.py', await fetchBytes(RULES_FILE));
       $('ver').textContent = `규칙 버전 ${py.globals.get('_setup')()}` + (RULES_FILE !== 'convert_sales.py' ? ` (테스트: ${RULES_FILE})` : '');
+      showChannels();
     } catch (e) { console.warn('규칙 새로고침 실패, 기존 규칙 사용', e); }
     for (const f of py.FS.readdir('/app/원본')) if (f !== '.' && f !== '..') py.FS.unlink('/app/원본/' + f);
     for (const it of items) py.FS.writeFile('/app/원본/' + it.name, it.bytes);
