@@ -30,6 +30,9 @@
                border-radius: 6px; padding: 1px 6px; }
   .side .tag { display: block; width: fit-content; }
   .side .tag.warn { color: #8a5a00; background: #fff4d6; }
+  .side .guide { font-size: 12.5px; line-height: 1.5; background: #eef3fb; color: #2b4a7d; border-radius: 8px; padding: 8px 10px; margin: 0 0 12px; }
+  .side [title] { cursor: help; }
+  .side .acc.rule { text-decoration: underline dotted; text-underline-offset: 3px; width: fit-content; }
   .side .acc { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
   .side .foot { color: var(--muted); font-size: 12px; margin: 12px 0 0; line-height: 1.5; }
   main { min-width: 0; }
@@ -93,6 +96,7 @@
   <aside class="panel side" aria-label="변환 가능한 매출처">
     <h2>매출처 변환 현황</h2>
     <p class="sub" id="chcount">불러오는 중…</p>
+    <p class="guide">매출처별로 <b>파일 한 개</b>로 만들어 올려 주세요. 부가세 내역처럼 따로 받은 자료는 같은 파일에 시트로 넣으면 돼요.</p>
     <ul id="chlist"></ul>
     <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>노란 표시가 있는 곳은 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
   </aside>
@@ -101,7 +105,7 @@
   <div class="panel">
     <div id="drop" tabindex="0" role="button" aria-label="정산 엑셀 파일 추가">
       <strong>채널 정산 엑셀을 여기에 끌어다 놓거나 클릭해서 선택하세요</strong>
-      <span>.xlsx · .xls · .csv 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
+      <span>매출처별 파일 한 개씩 · .xlsx · .xls · .csv 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
     </div>
     <input type="file" id="picker" multiple accept=".xlsx,.xlsm,.xls,.csv" hidden>
     <div class="bar">
@@ -164,13 +168,12 @@ function showChannels() {
     for (const c of arr) {
       const li = document.createElement('li'); li.className = cls;
       li.appendChild(document.createTextNode(c.name));
-      const sub = (txt) => { const a = document.createElement('span'); a.className = 'acc'; a.textContent = txt; li.appendChild(a); };
-      if (c.rule && c.rule !== c.name) sub('규칙: ' + c.rule);
+      const sub = (txt, tip, cls) => { const a = document.createElement('span'); a.className = 'acc' + (cls ? ' ' + cls : ''); a.textContent = txt; if (tip) a.title = tip; li.appendChild(a); };
+      if (c.rule && c.rule !== c.name) sub('규칙: ' + c.rule, `이 매출처 파일은 convert_sales.py의 '${c.rule}' 변환 규칙으로 처리돼요`, 'rule');
       if (c.memo) sub(c.memo);
-      const tag = (txt, k) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; li.appendChild(t); };
-      if (c.vat) tag('부가세 시트 같이 넣기');
-      if (c.pending) tag('원본 확인 중', 'warn');
-      if (c.confirm) tag('경영지원팀 확인 중', 'warn');
+      const tag = (txt, k, tip) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; if (tip) t.title = tip; li.appendChild(t); };
+      if (c.pending) tag('원본 확인 중', 'warn', '경영지원팀 가공 파일로만 테스트함 · 원본(raw) 데이터로 다시 확인 필요');
+      if (c.confirm) tag('경영지원팀 확인 중', 'warn', '원본으로 규칙을 만들었지만 경영지원팀 업로드 기준과 아직 대조 안 함');
       ul.appendChild(li);
     }
   };
