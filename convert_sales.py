@@ -20,7 +20,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import openpyxl
 
 # 규칙을 고치면 이 날짜도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
-RULES_VERSION = '2026-11-11'
+RULES_VERSION = '2026-11-11b'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -197,7 +197,6 @@ def parse_sk(wb, bk):
         ship = sum(num(r[c]) for r in rows[hi + 1:hi + 3] if r and isdigit(r[0]))
         if ship:
             bk.notes.append(f'배송비 확인: 정산종합내역서에 고객부담배송비 {ship:,}원 — 이번 변환에는 미반영')
-    bk.notes.append('SK스토아: 경영지원팀 파일로 아직 대조 못 함 (매출 총액 기준·부가세 14 가정)')
 
 
 def parse_ns(wb, bk):
@@ -235,7 +234,7 @@ def parse_ns(wb, bk):
     fee = sheet(wb, '특약수수료')
     if fee and any(r[0] for r in fee.iter_rows(min_row=2, values_only=True)):
         bk.notes.append('특약수수료 시트에 내역이 있음 — 처리 규칙 확인 필요 (이번 변환에는 미반영)')
-    bk.notes.append('NS홈쇼핑: 경영지원팀 파일로 아직 대조 못 함 (세금계산서 매출이라 부가세 시트 비움, 광고비는 VAT 별도 가정)')
+    bk.info.append('세금계산서 매출이라 부가세 시트는 비움')
 
 
 def parse_nudge(wb, bk):
@@ -258,7 +257,6 @@ def parse_nudge(wb, bk):
         bk.add_gross('수수료', code, name, num(r[h['판매수수료(C=A*B 또는 C=A-X)']]))
     if ship:
         bk.notes.append(f'배송비 확인: 배송비 행에 금액 {ship:,}원 — 이번 변환에는 미반영')
-    bk.notes.append('넛지: 경영지원팀 파일로 아직 대조 못 함 (결제수단→과세구분, 수수료 VAT 포함 가정)')
 
 
 def parse_ohouse(wb, bk):
@@ -353,7 +351,6 @@ def parse_woori(wb, bk):
         bk.add('매출', code, name, sup, vat10(sup) if taxable else 0)
         bk.add('수수료', code, name, fee, vat10(fee))
     bk.tax_from_sales(HOMESHOP_TAX)
-    bk.notes.append('우리홈쇼핑: 경영지원팀 파일로 아직 대조 못 함 (부가세 행별 10%·부가세 14 가정, 인터넷 매출·ARS 미반영)')
 
 
 def parse_cj(wb, bk):
@@ -575,11 +572,11 @@ def parse_kakao(wb, bk):
             if r[vh['주문번호']] not in (None, ''):
                 deduct[str(r[vh['주문번호']]).split('.')[0]] += num(r[vh['수수료차감금액']])
         bk.used.add(fname)
-        bk.info.append(f'부가세: {fname} 사용')
+        bk.info.append(f'톡스토어 부가세: {fname} 사용')
     else:
-        bk.notes.append('같은 판매자번호의 카카오 부가세 파일이 없어 결제수단으로 과세구분을 나눔 — 부가세 파일을 같이 올려 주세요')
+        bk.notes.append('톡스토어 부가세 자료 없음 — 결제수단으로 과세구분을 추정함. 부가세 자료를 같은 파일에 시트로 넣어 주세요')
 
-    tok_sale = gift_disc = 0
+    tok_sale = gift_disc = gift_sale = gift_n = 0
     done_orders = set()
     for r in data:
         is_ship = r[h['정산구분']] == '배송비'
@@ -599,6 +596,7 @@ def parse_kakao(wb, bk):
             bk.add_tax_gross(KAKAO_PAY_TO_TAX.get(str(r[h['결제수단']]).strip(), DEFAULT_TAX), sale)
         if gift:
             gift_disc += g(r, '카카오할인금액합계')
+            gift_sale += sale; gift_n += 1
         else:
             tok_sale += sale
     if vat:
@@ -611,10 +609,12 @@ def parse_kakao(wb, bk):
             bk.notes.append('카카오 부가세 파일에 면세매출이 있음 — 처리 규칙 확인 필요')
         if vtot != tok_sale:
             bk.notes.append(f'톡스토어 매출({tok_sale:,})과 부가세 파일 과세매출({vtot:,})이 다름 — 같은 판매자·기간 파일인지 확인')
-    if gift_disc:
-        bk.notes.append(f'선물하기 카카오할인 {gift_disc:,}원 — 부가세 자료가 없어 매출·수수료에서 빼지 않음, 처리 확인 필요')
-    if any(r[h['채널']] != '카카오톡 스토어' for r in data):
-        bk.notes.append('선물하기 매출은 정산 파일 결제수단으로 과세구분을 나눔 (카드 17 / 현금·무통장·포인트 31 / 휴대폰 14) — 선물하기 부가세 자료가 있으면 같이 올려 주세요')
+    if gift_n:
+        msg = (f'선물하기 부가세 자료 없음 ({gift_n}건, {gift_sale:,}원) — 결제수단으로 과세구분 추정 '
+               f'(카드 17 / 현금·무통장·포인트 31 / 휴대폰 14)')
+        if gift_disc:
+            msg += f', 카카오할인 {gift_disc:,}원은 빼지 않음'
+        bk.notes.append(msg + '. 선물하기 부가세 자료를 같은 파일에 시트로 넣어 주세요')
 
 
 # ── 토스쇼핑 ──────────────────────────────────────────────────────────
@@ -686,7 +686,6 @@ def parse_toss(wb, bk):
         bk.notes.append(f'정산 토스 부담 할인({disc_t:,})과 부가세 파일 매출 에누리({enuri:,})가 다름 — 확인 필요')
     bk.used.add(fname)
     bk.info.append(f'부가세: {fname} 사용')
-    bk.notes.append('토스쇼핑: 경영지원팀 파일·수수료 세금계산서로 아직 대조 못 함')
 
 
 # ── 포인트·PG 결제 입점몰 (요약/목록 시트) ─────────────────────────────
@@ -719,7 +718,6 @@ def parse_pointmall(wb, bk):
         plat_disc += pdisc
     if plat_disc:
         bk.info.append(f'운용사 부담 할인 {plat_disc:,}원은 매출·수수료에서 차감')
-    bk.notes.append(f'{POINTMALL_NAME}: 할인 처리·과세구분(포인트 14 / PG 17) 경영지원팀 확인 필요')
 
 
 # ── 수기 추가 시트 ('추가') ─────────────────────────────────────────
