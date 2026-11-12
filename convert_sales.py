@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 15:18'
+RULES_VERSION = '2026-11-12 16:06'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1258,8 +1258,8 @@ def parse_auction(wb, bk):
 
 
 # 세금계산서 매출(베네피아·웰스토리·복지샵 등 매입해 가는 곳)의 부가세 과세구분.
-# 베네피아 9월 정답지는 11이었지만 업로드 양식 설명엔 14/17/31만 있어 14(건별)로 둠 — 11로 바꾸려면 여기만 수정.
-TAX_INVOICE_CODE = '14'
+# 11 = 세금계산서 과세 매출 (경영지원팀 확인 11/12 — 업로드 양식 설명엔 14/17/31만 있지만 11 사용)
+TAX_INVOICE_CODE = '11'
 
 
 def _tax_invoice_row(bk):
@@ -1396,25 +1396,26 @@ COMPANIONS = [
 ]
 
 
-DATA_START = 4   # 양식 1~3행(한글 제목 / 영문 필드명 / 타입 설명)은 그대로 두고 4행부터 데이터
+CLEAR_FROM = 4   # 양식 4행(샘플 행)부터 지움 — 아마란스는 4행을 읽지 않으므로 4행은 비워 둠 (경영지원팀 확인 11/12)
+DATA_START = 5   # 1~3행(한글 제목 / 영문 필드명 / 타입 설명) 유지, 4행 빈 줄, 5행부터 데이터
 
 
 def write(out, bk):
-    """아마란스 업로드 양식 그대로: 1~3행 유지, 샘플 행 지우고 4행부터 데이터. 합계 행은 넣지 않음(데이터로 읽힐 수 있어서)."""
+    """아마란스 업로드 양식 그대로: 1~3행 유지, 4행(샘플) 비우고 5행부터 데이터. 합계 행은 넣지 않음(데이터로 읽힐 수 있어서)."""
     shutil.copyfile(TEMPLATE, out)
     wb = openpyxl.load_workbook(out)
     for title in ('매출', '광고', '수수료'):
         ws = wb[title]
-        if ws.max_row >= DATA_START:
-            ws.delete_rows(DATA_START, ws.max_row)
+        if ws.max_row >= CLEAR_FROM:
+            ws.delete_rows(CLEAR_FROM, ws.max_row)
         for i, (code, name, sup, vat) in enumerate(bk.rows[title], start=DATA_START):
             ws.cell(i, 1, code[:30] or None).number_format = '@'
             ws.cell(i, 2, name[:100])
             ws.cell(i, 3, sup)
             ws.cell(i, 4, vat)
     ws = wb['부가세']
-    if ws.max_row >= DATA_START:
-        ws.delete_rows(DATA_START, ws.max_row)
+    if ws.max_row >= CLEAR_FROM:
+        ws.delete_rows(CLEAR_FROM, ws.max_row)
     if bk.tax_rows:                      # 건별 (홈쇼핑·넛지·설정형 채널)
         tax_lines = bk.tax_rows
     else:                                # 결제수단별 합계 (오늘의집·롯데ON·11번가)
