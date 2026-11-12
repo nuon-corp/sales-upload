@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 10:00'
+RULES_VERSION = '2026-11-12 10:10'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1044,14 +1044,12 @@ def parse_always(wb, bk):
             bk.add_gross('수수료', None, name, fee)
             bk.add_tax_gross(ALWAYS_PAY_TO_TAX.get(str(pay).strip(), '14'), amt)
         elif fee:
-            # 상품 없는 청구: 주문아이디 칸에 '정산제외 - 서버이용료 / 올팜 사진후기 / 기타' 같은 항목명이 있음
+            # 상품 없는 청구(모두 수수료): 주문아이디 칸에 '정산제외 - 서버이용료 / 올팜 사진후기 / 기타' 같은 항목명이 있음
             item = re.sub(r'^정산제외\s*-\s*', '', str(r[h['주문아이디']] or '').strip()) or '기타'
             bk.add_gross('수수료', None, f'올웨이즈 {item}', fee)
             etc[item][0] += 1; etc[item][1] += fee
-    unsure = {k: v for k, v in etc.items() if k != '서버이용료'}
-    if unsure:
-        bk.notes.append('정산제외 항목을 수수료로 넣음 — 광고비인지 확인 필요: '
-                        + ', '.join(f'{k} {n}건 {a:,}원' for k, (n, a) in unsure.items()))
+    if etc:   # 정산제외 항목은 모두 수수료 (경영지원팀 확인 11/12)
+        bk.info.append('정산제외 항목은 수수료로 넣음: ' + ', '.join(f'{k} {n}건 {a:,}원' for k, (n, a) in etc.items()))
 
 
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
@@ -1122,7 +1120,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '올웨이즈'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
