@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 13:52'
+RULES_VERSION = '2026-11-12 15:05'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -40,7 +40,7 @@ NUDGE_PAY_TO_TAX = {
 # 오늘의집 부가세신고 화면 결제수단 → 과세구분 (경영지원팀 파일과 일치 확인)
 OHOUSE_PAY_TO_TAX = {'카드': '17', '현금': '31', '기타': '14'}
 DEFAULT_TAX = '14'
-TAX_NAME = {'14': '건별', '17': '카드', '31': '현금'}
+TAX_NAME = {'11': '세금계산서', '14': '건별', '17': '카드', '31': '현금'}
 
 
 # ── 공통 유틸 ──────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ def parse_ns(wb, bk):
     fee = sheet(wb, '특약수수료')
     if fee and any(r[0] for r in fee.iter_rows(min_row=2, values_only=True)):
         bk.notes.append('특약수수료 시트에 내역이 있음 — 처리 규칙 확인 필요 (이번 변환에는 미반영)')
-    bk.info.append('세금계산서 매출이라 부가세 시트는 비움')
+    _tax_invoice_row(bk)
 
 
 def parse_nudge(wb, bk):
@@ -364,24 +364,28 @@ def parse_gongyoung(wb, bk):
                 total[k] += num(r[h['협력사부담금액']]); names[k] = r[h['상품명']]
         for k, amt in total.items():   # 상품별 합계로 1행 (경영지원팀 방식)
             bk.add_gross('광고', k, names[k], amt)
+    else:
+        bk.notes.append('카드무이자 협력사부담 시트(대금지불조회 → 무이자)가 없어 광고가 0원 — 같은 파일에 시트로 넣어 주세요')
     if sheet(wb, '반품비용'):
         bk.info.append('반품비용 입금 시트는 경영지원팀 방식대로 업로드에서 제외')
 
 
 def parse_woori(wb, bk):
-    """우리홈쇼핑(롯데홈쇼핑): 방송 수수료매출현황(VAT별도) — 매출 = 판매금액, 수수료 = 매입수수료, 부가세 10%."""
-    ws = sheet(wb, '품목별', '판매금액', '매입수수료')
+    """우리홈쇼핑(롯데홈쇼핑): 방송 수수료매출현황(VAT별도) — 매출 = 판매금액, 수수료 = 매입수수료, 부가세 10%.
+    원본 다운로드는 열 이름이 '상품대금'·'수수료금액'이고 맨 아래 합계 행이 있음 (가공 파일은 '매입금액'·'매입수수료')."""
+    ws = sheet(wb, '품목별', '판매금액', '매입수수료') or sheet(wb, '품목별', '판매금액', '수수료금액')
     rows = list(ws.iter_rows(values_only=True))
-    hi = find_header(rows, '주문번호', '판매금액', '매입수수료')
+    hi = next(i for i, r in enumerate(rows) if r and '주문번호' in r and '판매금액' in r)
     h = header_index(rows[hi])
+    fee_col = '매입수수료' if '매입수수료' in h else '수수료금액'
     for r in rows[hi + 1:]:
-        if r[h['순번']] == '합계':
+        if r[h['순번']] == '합계' or str(r[h['주문번호']] or '').strip() == '합계':
             break
         if not isdigit(r[h['순번']]):
             continue
         code, name = r[h['상품코드']], r[h['상품명']]
         taxable = r[h['과세']] != '면세'
-        sup, fee = num(r[h['판매금액']]), num(r[h['매입수수료']])
+        sup, fee = num(r[h['판매금액']]), num(r[h[fee_col]])
         bk.add('매출', code, name, sup, vat10(sup) if taxable else 0)
         bk.add('수수료', code, name, fee, vat10(fee))
     bk.tax_from_sales(HOMESHOP_TAX)
@@ -970,7 +974,7 @@ def parse_welstory(wb, bk):
         taxable = r[h['과면세']] != '면세'
         bk.add('매출', r[h['업체상품번호']], r[h['상품명']], num(r[h['최종매입공급금액']]),
                num(r[h['최종매입VAT']]) if taxable else 0)
-    bk.info.append('세금계산서 매출이라 부가세 시트는 비움')
+    _tax_invoice_row(bk)
 
 
 def parse_welfare(wb, bk):
@@ -986,7 +990,7 @@ def parse_welfare(wb, bk):
         if r[0] == '합계' or not r[c_name]:
             continue
         bk.add_gross('매출', r[c_code], r[c_name], num(r[c_amt]), r[c_tax] != '면세')
-    bk.info.append('세금계산서 매출이라 부가세 시트는 비움')
+    _tax_invoice_row(bk)
 
 
 CONSIGN_PAY_TO_TAX = {'카드': '17', '현금': '31', '포인트': '14', '기타': '14'}
@@ -1253,6 +1257,32 @@ def parse_auction(wb, bk):
     _esm_unused(wb, bk, prods, both, vat)
 
 
+def _tax_invoice_row(bk):
+    """세금계산서 매출: 부가세 시트에 과세구분 11 한 줄, 매출 합계로 공급가·부가세 계산 (경영지원팀 방식, 베네피아 9월분으로 확인)."""
+    total = sum(r[2] + r[3] for r in bk.rows['매출'])
+    if total:
+        bk.add_tax_row('11', *split_vat(total))
+    bk.info.append('세금계산서 매출이라 부가세 시트는 11(세금계산서) 합계 1줄')
+
+
+def parse_benepia(wb, bk):
+    """베네피아(SK엠앤서비스): 매입 방식 — 매출 = 매입액(= 정산금액, 부가세 포함 ÷1.1), 수수료 없음.
+    부가세 = 세금계산서(11) 1줄, 합계 금액으로 공급가·부가세 계산 (경영지원팀 9월 업로드 파일과 대조 11/12)."""
+    ws = sheet(wb, '§', '벤더사', '매입액', '매출액', '정산금액')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '벤더사', '매입액', '매출액', '정산금액')
+    h = {str(k).replace('\n', ''): v for k, v in header_index(rows[hi]).items()}
+    for r in rows[hi + 1:]:
+        if not r or not r[h['주문번호']]:
+            continue
+        amt = num(r[h['매입액']])
+        if not amt:
+            continue
+        taxable = str(r[h['과세유형']] or '과세').strip() != '면세' if '과세유형' in h else True
+        bk.add_gross('매출', r[h['상품번호']], r[h['상품명']], amt, taxable)
+    _tax_invoice_row(bk)
+    bk.info.append('매입 방식: 매출 = 매입액, 수수료 없음')
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
@@ -1305,7 +1335,7 @@ CHANNEL_LIST = [
     ('(주)제이슨그룹', '제이슨딜', ''),
     ('테무(TEMU)', None, ''),
     ('마켓컬리_살림백서', None, ''),
-    ('에스케이엠앤서비스 주식회사(베네피아)', None, ''),
+    ('에스케이엠앤서비스 주식회사(베네피아)', '베네피아', ''),
     ('테무(살림백서)', None, ''),
     ('지마켓(newnuon)', None, ''),
     ('지마켓글로벌 유한책임회사(newnuon)', None, ''),
@@ -1319,7 +1349,7 @@ CHANNEL_LIST = [
 
 # 원본(raw) 파일로 아직 검증 안 한 매출처 — 화면 왼쪽 목록에 '원본 확인 중' 표시.
 # 원본으로 확인이 끝나면 여기서 이름을 지우면 됨.
-RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
+RAW_PENDING = {'오늘의집', 'CJ온스타일'}   # 공영·우리홈쇼핑은 9월 원본으로 확인 완료(11/12)
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
 RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '제이슨딜', '옥션'}
@@ -1334,7 +1364,7 @@ CHANNELS = [
     ('넛지헬스케어캐시딜', lambda w: has(w, '판매수수료(C=A*B'), parse_nudge),
     ('오늘의집', lambda w: has(w, '주문옵션번호') and has(w, '부가세신고'), parse_ohouse),
     ('공영홈쇼핑', lambda w: has(w, '매출차감적립금'), parse_gongyoung),
-    ('우리홈쇼핑', lambda w: has(w, '매입수수료') and has(w, '판매금액'), parse_woori),
+    ('우리홈쇼핑', lambda w: has(w, '판매금액') and (has(w, '매입수수료') or (has(w, '수수료금액') and has(w, '상품대금') and has(w, '단품상세'))), parse_woori),
     ('CJ온스타일', lambda w: has(w, 'CJ온스타일매출'), parse_cj),
     ('롯데ON', lambda w: has(w, '정산대상판매금액') and has(w, '판매자상품명'), parse_lotteon),
     ('11번가', lambda w: has(w, '판매금액합계') and has(w, '공제금액합계') and has(w, '할인쿠폰이용료'), parse_11st),
@@ -1347,6 +1377,7 @@ CHANNELS = [
     ('제이슨딜', lambda w: has(w, '결제금액(배송비포함)') and has(w, '업체ID') and has(w, '공급가'), parse_jason),
     ('G마켓', lambda w: has(w, 'G마켓 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_gmarket),
     ('옥션', lambda w: has(w, '옥션 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_auction),
+    ('베네피아', lambda w: has(w, '벤더사바로가게쿠폰금액') or (has(w, '벤더사') and has(w, '직매입여부') and has(w, '매입액')), parse_benepia),
     ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
