@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 15:05'
+RULES_VERSION = '2026-11-12 15:18'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1257,17 +1257,22 @@ def parse_auction(wb, bk):
     _esm_unused(wb, bk, prods, both, vat)
 
 
+# 세금계산서 매출(베네피아·웰스토리·복지샵 등 매입해 가는 곳)의 부가세 과세구분.
+# 베네피아 9월 정답지는 11이었지만 업로드 양식 설명엔 14/17/31만 있어 14(건별)로 둠 — 11로 바꾸려면 여기만 수정.
+TAX_INVOICE_CODE = '14'
+
+
 def _tax_invoice_row(bk):
-    """세금계산서 매출: 부가세 시트에 과세구분 11 한 줄, 매출 합계로 공급가·부가세 계산 (경영지원팀 방식, 베네피아 9월분으로 확인)."""
+    """세금계산서 매출: 부가세 시트에 한 줄, 매출 합계로 공급가·부가세 계산 (베네피아 9월분 정답지 방식)."""
     total = sum(r[2] + r[3] for r in bk.rows['매출'])
     if total:
-        bk.add_tax_row('11', *split_vat(total))
-    bk.info.append('세금계산서 매출이라 부가세 시트는 11(세금계산서) 합계 1줄')
+        bk.add_tax_row(TAX_INVOICE_CODE, *split_vat(total))
+    bk.info.append(f'세금계산서 매출이라 부가세 시트는 {TAX_NAME[TAX_INVOICE_CODE]}({TAX_INVOICE_CODE}) 합계 1줄')
 
 
 def parse_benepia(wb, bk):
     """베네피아(SK엠앤서비스): 매입 방식 — 매출 = 매입액(= 정산금액, 부가세 포함 ÷1.1), 수수료 없음.
-    부가세 = 세금계산서(11) 1줄, 합계 금액으로 공급가·부가세 계산 (경영지원팀 9월 업로드 파일과 대조 11/12)."""
+    부가세 = 합계 1줄 (TAX_INVOICE_CODE), 합계 금액으로 공급가·부가세 계산 (경영지원팀 9월 업로드 파일과 대조 11/12)."""
     ws = sheet(wb, '§', '벤더사', '매입액', '매출액', '정산금액')
     rows = list(ws.iter_rows(values_only=True))
     hi = find_header(rows, '벤더사', '매입액', '매출액', '정산금액')
