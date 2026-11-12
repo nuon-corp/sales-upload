@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 10:10'
+RULES_VERSION = '2026-11-12 10:45'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1052,6 +1052,32 @@ def parse_always(wb, bk):
         bk.info.append('정산제외 항목은 수수료로 넣음: ' + ', '.join(f'{k} {n}건 {a:,}원' for k, (n, a) in etc.items()))
 
 
+JASON_PAY_TO_TAX = {'신용카드': '17', '계좌이체': '31'}   # 그 밖(포인트·휴대폰 등)은 14
+
+
+def parse_jason(wb, bk):
+    """제이슨딜(제이슨그룹): 매출 = 결제금액(배송비포함) 행별 (쿠폰·적립금은 제이슨 부담이라 이미 빠져 있음),
+    수수료 = 제이슨 수익 = 매출 합계 − 총 지급 금액(공급가 + 배송비) 한 줄 (원본에 상품별 수수료 없음).
+    부가세 = 신용카드 17 / 계좌이체 31 / 그 밖 14."""
+    ws = sheet(wb, '§', '결제금액(배송비포함)', '공급가', '업체ID')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '결제금액(배송비포함)', '공급가', '업체ID')
+    h = header_index(rows[hi])
+    sales = pay_out = 0
+    for r in rows[hi + 1:]:
+        if not r[h['업체ID']] or not r[h['주문번호']]:
+            continue   # 맨 아래 합계·설명 행
+        amt = num(r[h['결제금액(배송비포함)']])
+        bk.add_gross('매출', r[h['통합상품코드']], r[h['상품명(전시)']], amt)
+        bk.add_tax_gross(JASON_PAY_TO_TAX.get(str(r[h['결제방법']] or '').strip(), '14'), amt)
+        sales += amt
+        pay_out += num(r[h['공급가']]) + num(r[h['배송비']]) + num(r[h['CS배송비(공급처)']]) \
+            + num(r[h['고객보상']]) + num(r[h['추가결제금(공급처)']])
+    if sales:
+        bk.add_gross('수수료', None, '제이슨딜 수수료(제이슨 수익)', sales - pay_out)
+    bk.info.append(f'지급 금액 {pay_out:,}원 = 공급가 + 배송비, 수수료 = 매출 − 지급 금액')
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
@@ -1100,7 +1126,7 @@ CHANNEL_LIST = [
     ('(주) 비바리퍼블리카(토스)', '토스쇼핑', ''),
     ('(주)카카오_헤디안(카카오톡스토어)', '카카오', ''),
     ('씨제이이엔엠(CJ오쇼핑)_살림백서', 'CJ온스타일', ''),
-    ('(주)제이슨그룹', None, ''),
+    ('(주)제이슨그룹', '제이슨딜', ''),
     ('테무(TEMU)', None, ''),
     ('마켓컬리_살림백서', None, ''),
     ('에스케이엠앤서비스 주식회사(베네피아)', None, ''),
@@ -1120,7 +1146,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '제이슨딜'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
@@ -1142,6 +1168,7 @@ CHANNELS = [
     ('삼성웰스토리', lambda w: has(w, '최종매입공급금액') and has(w, '최종매입VAT'), parse_welstory),
     ('복지샵', lambda w: has(w, '복지샵') and has(w, '실정산금액'), parse_welfare),
     ('올웨이즈', lambda w: has(w, '매출에누리(올웨이즈 부담)') and has(w, '세금계산서 발급금액'), parse_always),
+    ('제이슨딜', lambda w: has(w, '결제금액(배송비포함)') and has(w, '업체ID') and has(w, '공급가'), parse_jason),
     ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
