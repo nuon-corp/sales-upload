@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-11 15:30'
+RULES_VERSION = '2026-11-12 10:00'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1023,6 +1023,37 @@ def parse_consign(wb, bk):
                 bk.add_tax_row(code, *split_vat(amt))
 
 
+ALWAYS_PAY_TO_TAX = {'카드': '17', '현금': '31'}
+
+
+def parse_always(wb, bk):
+    """올웨이즈(레브잇) 세금계산서 상세내역: 매출 = 수수료대상 거래금액 − 매출에누리(올웨이즈 부담), 수수료 = 세금계산서 발급금액
+    (= 수수료 + 특별수수료 − 매출에누리(올웨이즈 부담)). 결제수단 없는 행(정산제외 - 서버이용료·올팜 사진후기·기타)은 수수료로 넣음.
+    부가세 = 카드 17 / 현금 31."""
+    ws = sheet(wb, '세금계산서', '수수료대상 거래금액', '세금계산서 발급금액')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '수수료대상 거래금액', '세금계산서 발급금액')
+    h = header_index(rows[hi])
+    etc = defaultdict(lambda: [0, 0])   # 정산제외 항목명 → [건수, 금액]
+    for r in rows[hi + 1:]:
+        pay, fee = r[h['결제 수단']], num(r[h['세금계산서 발급금액']])
+        if pay:
+            name = r[h['상품명']]
+            amt = num(r[h['수수료대상 거래금액']]) - num(r[h['매출에누리(올웨이즈 부담)']])   # 경영지원팀 확인(11/12)
+            bk.add_gross('매출', None, name, amt)
+            bk.add_gross('수수료', None, name, fee)
+            bk.add_tax_gross(ALWAYS_PAY_TO_TAX.get(str(pay).strip(), '14'), amt)
+        elif fee:
+            # 상품 없는 청구: 주문아이디 칸에 '정산제외 - 서버이용료 / 올팜 사진후기 / 기타' 같은 항목명이 있음
+            item = re.sub(r'^정산제외\s*-\s*', '', str(r[h['주문아이디']] or '').strip()) or '기타'
+            bk.add_gross('수수료', None, f'올웨이즈 {item}', fee)
+            etc[item][0] += 1; etc[item][1] += fee
+    unsure = {k: v for k, v in etc.items() if k != '서버이용료'}
+    if unsure:
+        bk.notes.append('정산제외 항목을 수수료로 넣음 — 광고비인지 확인 필요: '
+                        + ', '.join(f'{k} {n}건 {a:,}원' for k, (n, a) in unsure.items()))
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
@@ -1045,7 +1076,7 @@ CHANNEL_LIST = [
     ('엔에이치엔페이코(주)', None, ''),
     ('(주)티알엔', None, ''),
     ('Qoo10(큐텐)', None, ''),
-    ('주식회사 레브잇(올웨이즈)', None, ''),
+    ('주식회사 레브잇(올웨이즈)', '올웨이즈', ''),
     ('(주)버킷플레이스', '오늘의집', ''),
     ('네이버페이(자사몰)', None, ''),
     ('지마켓-지마켓(프로클)', None, ''),
@@ -1091,7 +1122,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '올웨이즈'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
@@ -1112,6 +1143,7 @@ CHANNELS = [
     ('알리익스프레스', lambda w: has(w, '비용 항목명') and has(w, '수수료 항목명') and has(w, '총액(KRW)'), parse_ali),
     ('삼성웰스토리', lambda w: has(w, '최종매입공급금액') and has(w, '최종매입VAT'), parse_welstory),
     ('복지샵', lambda w: has(w, '복지샵') and has(w, '실정산금액'), parse_welfare),
+    ('올웨이즈', lambda w: has(w, '매출에누리(올웨이즈 부담)') and has(w, '세금계산서 발급금액'), parse_always),
     ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
