@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 10:45'
+RULES_VERSION = '2026-11-12 13:40'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1078,13 +1078,145 @@ def parse_jason(wb, bk):
     bk.info.append(f'지급 금액 {pay_out:,}원 = 공급가 + 배송비, 수수료 = 매출 − 지급 금액')
 
 
+# ── ESM(G마켓·옥션) ──────────────────────────────────────────────────────
+# G마켓은 주문일 기준(매출용)과 매출기준일 기준(수수료용) 자료를 같이 받음 — 부가세 자료 총액과 맞는 쌍이 매출용.
+ESM_VAT_TO_TAX = {'신용카드결제': '17', '신용카드': '17', '현금결제': '31', '현금영수증': '31',
+                  '휴대폰결제': '14', '기타결제': '14', '기타': '14', '선불전자결제': '14', '선불전자': '14',
+                  'G마켓쿠폰': '14'}
+
+
+def _sheets_with(wb, *need):
+    out = []
+    for ws in wb.worksheets:
+        if ws.title.startswith(EXTRA_SHEET):
+            continue
+        rows = list(ws.iter_rows(values_only=True))
+        try:
+            hi = find_header(rows, *need)
+        except StopIteration:
+            continue
+        out.append((ws.title, header_index(rows[hi]), rows[hi + 1:]))
+    return out
+
+
+def _ship_row(r, h, col):
+    v = r[h[col]] if r and len(r) > h[col] else None
+    return v not in (None, '') and str(v).strip() != col   # 빈 줄·반복된 제목 줄 제외
+
+
+def _esm_pick(bk, prods, ships, total, extra_sales, key_pay, key_ship):
+    """부가세 총액 = 상품 결제금액 + 배송비 + extra_sales 인 (상품, 배송비) 시트 쌍을 고름."""
+    def psum(p):
+        return sum(num(r[p[1][key_pay]]) for r in p[2] if r and r[p[1][key_pay]] not in (None, ''))
+    def ssum(sh):
+        return sum(num(r[sh[1][key_ship]]) for r in sh[2] if _ship_row(r, sh[1], key_ship))
+    ship_opts = ships or [None]
+    pairs = [(p, sh) for p in prods for sh in ship_opts]
+    pick = None
+    if total is not None:
+        for p, sh in pairs:
+            if psum(p) + (ssum(sh) if sh else 0) + extra_sales == total:
+                pick = (p, sh); break
+    if pick is None:
+        pick = pairs[0]
+        if len(prods) > 1 or len(ships) > 1:
+            bk.notes.append('상품·배송비 시트가 여러 벌인데 부가세 총액과 맞는 조합이 없어 첫 번째 시트로 변환함 — 시트 확인 필요')
+        elif total is not None:
+            got = psum(pick[0]) + (ssum(pick[1]) if pick[1] else 0) + extra_sales
+            bk.notes.append(f'매출 {got:,}원이 부가세 자료 총액 {total:,}원과 다름 ({got - total:+,}원)')
+    return pick
+
+
+def _esm_rows(bk, prod, ship, pay_col, ship_pay, ship_net, sales=True, fee=True):
+    if prod:
+        _, h, rows = prod
+        for r in rows:
+            if not r or r[h['주문번호']] in (None, '') or r[h[pay_col]] in (None, ''):
+                continue
+            pay, net = num(r[h[pay_col]]), num(r[h['판매자 최종정산금']])
+            code, name = r[h['상품번호']], r[h['상품명']]
+            if sales:
+                bk.add_gross('매출', code, name, pay)
+            if fee:
+                bk.add_gross('수수료', code, name, pay - net)     # = 서비스이용료(감면 반영), 마이너스일 수 있음
+    if ship:
+        _, hs, srows = ship
+        for r in srows:
+            if not _ship_row(r, hs, ship_pay):
+                continue
+            if sales:
+                bk.add_gross('매출', None, '배송비', num(r[hs[ship_pay]]))
+            if fee:
+                bk.add_gross('수수료', None, '배송비 서비스이용료', num(r[hs[ship_pay]]) - num(r[hs[ship_net]]))
+
+
+def parse_gmarket(wb, bk):
+    """G마켓 (경영지원팀 11/12): 매출은 주문일 기준 파일, 수수료는 매출기준일(배송완료) 기준 파일로 계산.
+    한 파일에 두 기준 시트를 다 넣으면 부가세 자료 총액과 맞는 쪽을 매출용, 나머지를 수수료용으로 씀.
+    매출 = 고객결제금 + 배송비 (+ 부가세 자료의 G마켓쿠폰), 수수료 = 고객결제금 − 판매자 최종정산금(= 서비스이용료,
+    G마켓 부담 쿠폰이 기본이용료 감면으로 들어와 마이너스일 수 있음) + 배송비 서비스이용료.
+    부가세 = 부가세 자료 결제수단별 합계 (신용카드 17 / 현금 31 / 휴대폰·기타·선불전자·G마켓쿠폰 14)."""
+    prods = _sheets_with(wb, '고객결제금(구. 구매대금)', '판매자 최종정산금')
+    ships = _sheets_with(wb, '배송비정산금액', '서비스이용료(선결제배송비)')
+    vat = _sheets_with(wb, '총매출액', 'G마켓쿠폰')
+    total, coupon, vrow = None, 0, None
+    if vat:
+        _, hv, vrows = vat[0]
+        vrow = next((r for r in vrows if r and str(r[0] or '').strip() not in ('', '합계')), None)
+        if vrow:
+            total, coupon = num(vrow[hv['총매출액']]), num(vrow[hv['G마켓쿠폰']])
+    prod, ship = _esm_pick(bk, prods, ships, total, coupon, '고객결제금(구. 구매대금)', '배송비')
+    fprod = next((p for p in prods if p is not prod), None)
+    fship = next((x for x in ships if x is not ship), None)
+    _esm_rows(bk, prod, ship, '고객결제금(구. 구매대금)', '배송비', '배송비정산금액', fee=False)
+    if fprod or fship:
+        _esm_rows(bk, fprod or prod, fship or ship, '고객결제금(구. 구매대금)', '배송비', '배송비정산금액', sales=False)
+        bk.info.append('매출: ' + ', '.join(t for t in [prod[0], ship[0] if ship else None] if t)
+                       + ' (주문일 기준) / 수수료: ' + ', '.join(t for t in [(fprod or prod)[0], (fship or ship)[0] if (fship or ship) else None] if t)
+                       + ' (매출기준일 기준)')
+    else:
+        _esm_rows(bk, prod, ship, '고객결제금(구. 구매대금)', '배송비', '배송비정산금액', sales=False)
+        bk.notes.append('매출기준일(배송완료) 기준 파일이 없어 수수료도 주문일 기준 파일로 계산함 — 매출기준일 기준 상품·배송비 파일을 같이 넣어 주세요')
+    if coupon:
+        bk.add_gross('매출', None, 'G마켓쿠폰', coupon)
+        bk.info.append(f'부가세 자료의 G마켓쿠폰 {coupon:,}원을 매출 1줄로 넣음 (수수료는 상계하지 않음 — 경영지원팀 확인 11/12)')
+    if vrow:
+        for col, code in ESM_VAT_TO_TAX.items():
+            if col in hv and num(vrow[hv[col]]):
+                bk.add_tax_gross(code, num(vrow[hv[col]]))
+    else:
+        bk.tax_from_sales('14')
+        bk.notes.append('G마켓 부가세 자료(총매출액·결제수단별) 시트가 없어 부가세 시트를 14(건별)로 채움 — 같은 파일에 넣어 주세요')
+
+
+def parse_auction(wb, bk):
+    """옥션: 매출 = 결제금액 + 배송비, 수수료 = 매출 − 판매자 최종정산금(배송비는 배송수수료).
+    부가세 = 부가세 상세 시트의 자료구분별 합계 (신용카드 17 / 현금영수증 31 / 휴대폰·기타·선불전자 14)."""
+    prods = _sheets_with(wb, '옥션 구매자 쿠폰 할인', '판매자 최종정산금')
+    ships = _sheets_with(wb, '배송비 정산액', '배송수수료')
+    vat = _sheets_with(wb, '자료구분', '매출금액')
+    total, vrows, hv = None, [], None
+    if vat:
+        _, hv, vrows = vat[0]
+        vrows = [r for r in vrows if r and r[hv['매출금액']] not in (None, '')]
+        total = sum(num(r[hv['매출금액']]) for r in vrows)
+    prod, ship = _esm_pick(bk, prods, ships, total, 0, '결제금액', '배송비')
+    _esm_rows(bk, prod, ship, '결제금액', '배송비', '배송비 정산액')
+    if vrows:
+        for r in vrows:
+            bk.add_tax_gross(ESM_VAT_TO_TAX.get(str(r[hv['자료구분']] or '').strip(), '14'), num(r[hv['매출금액']]))
+    else:
+        bk.tax_from_sales('14')
+        bk.notes.append('옥션 부가세 상세 시트가 없어 부가세 시트를 14(건별)로 채움 — 같은 파일에 넣어 주세요')
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
 CHANNEL_LIST = [
     ('쿠팡(주)', None, ''),
-    ('지마켓글로벌 유한책임회사(옥션)', None, ''),
-    ('지마켓', None, ''),
+    ('지마켓글로벌 유한책임회사(옥션)', '옥션', '아우페·헤디안 계정으로 추정'),
+    ('지마켓', 'G마켓', '아우페·헤디안 계정으로 추정'),
     ('11번가(십일번가)', '11번가', ''),
     ('씨제이이엔엠(CJ오쇼핑)', 'CJ온스타일', ''),
     ('(주)공영홈쇼핑', '공영홈쇼핑', ''),
@@ -1146,7 +1278,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', '공영홈쇼핑', '우리홈쇼핑', 'CJ온스타일'}
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '제이슨딜'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '제이슨딜', '옥션'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
@@ -1169,6 +1301,8 @@ CHANNELS = [
     ('복지샵', lambda w: has(w, '복지샵') and has(w, '실정산금액'), parse_welfare),
     ('올웨이즈', lambda w: has(w, '매출에누리(올웨이즈 부담)') and has(w, '세금계산서 발급금액'), parse_always),
     ('제이슨딜', lambda w: has(w, '결제금액(배송비포함)') and has(w, '업체ID') and has(w, '공급가'), parse_jason),
+    ('G마켓', lambda w: has(w, 'G마켓 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_gmarket),
+    ('옥션', lambda w: has(w, '옥션 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_auction),
     ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
