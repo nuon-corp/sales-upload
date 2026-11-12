@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 13:35'
+RULES_VERSION = '2026-11-12 13:52'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1172,6 +1172,7 @@ def parse_gmarket(wb, bk):
     """G마켓 (경영지원팀 11/12): 매출은 주문일 기준 파일, 수수료는 매출기준일(배송완료) 기준 파일로 계산.
     한 파일에 두 기준 시트를 다 넣으면 부가세 자료 총액과 맞는 쪽을 매출용, 나머지를 수수료용으로 씀.
     매출 = 고객결제금 + 배송비 (+ 부가세 자료의 G마켓쿠폰), 수수료 = 고객결제금 − 판매자 최종정산금(= 서비스이용료,
+    G마켓쿠폰과 상계,
     G마켓 부담 쿠폰이 기본이용료 감면으로 들어와 마이너스일 수 있음) + 배송비 서비스이용료.
     부가세 = 부가세 자료 결제수단별 합계 (신용카드 17 / 현금 31 / 휴대폰·기타·선불전자·G마켓쿠폰 14)."""
     prods = _sheets_with(wb, '고객결제금(구. 구매대금)', '판매자 최종정산금')
@@ -1198,7 +1199,15 @@ def parse_gmarket(wb, bk):
         bk.info.append('기준일이 한 벌뿐이라 매출·수수료를 같은 시트로 계산함 (경영지원팀 확인 11/12: 금액 같으면 상관없음)')
     if coupon:
         bk.add_gross('매출', None, 'G마켓쿠폰', coupon)
-        bk.info.append(f'부가세 자료의 G마켓쿠폰 {coupon:,}원을 매출 1줄로 넣음 (수수료는 상계하지 않음 — 경영지원팀 확인 11/12)')
+        bk.add_gross('수수료', None, 'G마켓쿠폰', coupon)   # 수수료와 상계 (경영지원팀 확인 11/12)
+        # 행별 반올림 차이로 공급가·부가세가 따로 몇 원 남지 않게, 수수료 합계 기준으로 이 줄에서 맞춤
+        fee = bk.rows['수수료']
+        total = sum(r[2] + r[3] for r in fee)
+        want_sup, _ = split_vat(total)
+        diff = want_sup - sum(r[2] for r in fee)
+        fee[-1][2] += diff
+        fee[-1][3] -= diff
+        bk.info.append(f'부가세 자료의 G마켓쿠폰 {coupon:,}원을 매출 1줄로 넣고 수수료와 상계함 (수수료에도 같은 금액 1줄)')
     if vrow:
         for col, code in ESM_VAT_TO_TAX.items():
             if col in hv and num(vrow[hv[col]]):
