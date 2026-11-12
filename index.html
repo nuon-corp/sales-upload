@@ -30,7 +30,7 @@
   body { margin: 0; background: var(--bg); color: var(--ink);
          font: 15px/1.55 "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
          -webkit-font-smoothing: antialiased; }
-  .wrap { max-width: 1360px; margin: 0 auto; padding: 28px 20px 56px; }
+  .wrap { max-width: 1520px; margin: 0 auto; padding: 28px 20px 56px; }
 
   /* ── 상단 ── */
   header.top { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 20px;
@@ -45,7 +45,7 @@
          background: var(--panel); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; }
   .ver::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--ok-dot); }
 
-  .layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 18px; align-items: start; }
+  .layout { display: grid; grid-template-columns: 360px minmax(0, 1fr); gap: 18px; align-items: start; }
   main { min-width: 0; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 20px;
            margin-bottom: 18px; box-shadow: var(--shadow); }
@@ -75,6 +75,17 @@
   .side .tag { display: block; width: fit-content; margin-top: 4px; font-size: 11px; font-weight: 600;
                color: var(--aux-ink); background: var(--aux); border-radius: 6px; padding: 1px 7px; }
   .side .tag.warn { color: var(--warn-ink); background: var(--warn); }
+  .side .tag.api { color: var(--aux-ink); background: var(--aux); }
+  .side li.api:not(.grp)::before { background: var(--aux-dot); }
+  .side li.grp.api { color: var(--aux-ink); }
+  .side .nm { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .side .acc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .side .acc.rule { text-decoration: underline dotted; text-underline-offset: 3px; width: fit-content; max-width: 100%; }
+  .side [title] { cursor: help; }
+  .side .nm[title] { cursor: default; }
+  .side .guide { font-size: 12.5px; line-height: 1.55; color: var(--ink); background: var(--accent-soft);
+                 border-left: 3px solid var(--accent); border-radius: 8px; padding: 9px 12px; margin: 0 0 14px; }
+  .side .guide b { color: var(--accent); }
   .side .foot { color: var(--muted); font-size: 12px; margin: 14px 0 0; padding: 10px 12px; line-height: 1.55;
                 background: var(--bg); border-radius: 10px; }
 
@@ -182,6 +193,7 @@
     <h2>매출처 변환 현황</h2>
     <p class="sub" id="chcount">불러오는 중…</p>
     <div class="meter"><i id="chbar"></i></div>
+    <p class="guide">매출처별로 <b>파일 한 개</b>로 만들어 올려 주세요. 부가세 내역처럼 따로 받은 자료는 같은 파일에 시트로 넣으면 돼요.</p>
     <ul id="chlist"></ul>
     <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>노란 표시가 있는 곳은 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
   </aside>
@@ -198,7 +210,7 @@
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></svg>
       </div>
       <strong>채널 정산 엑셀을 여기에 끌어다 놓거나 클릭해서 선택하세요</strong>
-      <span>.xlsx · .xls · .csv 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
+      <span>매출처별 파일 한 개씩 · .xlsx · .xls · .csv 여러 개 가능 · 파일명은 상관없고 내용으로 채널을 인식해요</span>
     </div>
     <input type="file" id="picker" multiple accept=".xlsx,.xlsm,.xls,.csv" hidden>
     <div class="bar">
@@ -269,8 +281,8 @@ function setStatus(html) { $('status').innerHTML = html; }
 function showChannels() {
   let list = [];
   try { list = JSON.parse(py.globals.get('_channels')()); } catch (e) { console.warn(e); }
-  const ok = list.filter(c => c.rule), no = list.filter(c => !c.rule);
-  $('chcount').textContent = `전체 ${list.length}곳 · 변환 가능 ${ok.length} · 아직 안 됨 ${no.length}`;
+  const ok = list.filter(c => c.rule), api = list.filter(c => c.api), no = list.filter(c => !c.rule && !c.api);
+  $('chcount').textContent = `전체 ${list.length}곳 · 변환 가능 ${ok.length}` + (api.length ? ` · API ${api.length}` : '') + ` · 아직 안 됨 ${no.length}`;
   $('chbar').style.width = (list.length ? ok.length / list.length * 100 : 0) + '%';
   const ul = $('chlist'); ul.innerHTML = '';
   const group = (title, arr, cls) => {
@@ -278,18 +290,19 @@ function showChannels() {
     const h = document.createElement('li'); h.className = 'grp ' + cls; h.textContent = `${title} (${arr.length})`; ul.appendChild(h);
     for (const c of arr) {
       const li = document.createElement('li'); li.className = cls;
-      li.appendChild(document.createTextNode(c.name));
-      const sub = (txt) => { const a = document.createElement('span'); a.className = 'acc'; a.textContent = txt; li.appendChild(a); };
-      if (c.rule && c.rule !== c.name) sub('규칙: ' + c.rule);
-      if (c.memo) sub(c.memo);
-      const tag = (txt, k) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; li.appendChild(t); };
-      if (c.vat) tag('부가세 시트 같이 넣기');
-      if (c.pending) tag('원본 확인 중', 'warn');
-      if (c.confirm) tag('경영지원팀 확인 중', 'warn');
+      const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = c.name; nm.title = c.name; li.appendChild(nm);
+      const sub = (txt, tip, cls) => { const a = document.createElement('span'); a.className = 'acc' + (cls ? ' ' + cls : ''); a.textContent = txt; if (tip) a.title = tip; li.appendChild(a); };
+      if (c.rule && c.rule !== c.name) sub('규칙: ' + c.rule, `이 매출처 파일은 convert_sales.py의 '${c.rule}' 변환 규칙으로 처리돼요`, 'rule');
+      if (c.memo) sub(c.memo, c.memo);
+      const tag = (txt, k, tip) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; if (tip) t.title = tip; li.appendChild(t); };
+      if (c.api) tag('API로 처리', 'api', '정산 자료를 API로 받아 처리 — 변환기에 넣지 않아요');
+      if (c.pending) tag('원본 확인 중', 'warn', '경영지원팀 가공 파일로만 테스트함 · 원본(raw) 데이터로 다시 확인 필요');
+      if (c.confirm) tag('경영지원팀 확인 중', 'warn', '원본으로 규칙을 만들었지만 경영지원팀 업로드 기준과 아직 대조 안 함');
       ul.appendChild(li);
     }
   };
   group('변환 가능', ok, 'ok');
+  group('API로 처리', api, 'api');
   group('아직 안 됨', no, 'no');
 }
 
@@ -311,11 +324,13 @@ def _channels():
     pend = getattr(cs, 'RAW_PENDING', ())
     rules = [c[0] for c in cs.CHANNELS]
     def item(name, rule, memo=''):
+        if rule == 'API':
+            return {'name': name, 'rule': None, 'api': True, 'memo': memo}
         return {'name': name, 'rule': rule, 'memo': memo,
                 'vat': bool(rule) and rule in comp, 'pending': bool(rule) and rule in pend,
                 'confirm': bool(rule) and rule in getattr(cs, 'RULE_PENDING', ())}
     full = getattr(cs, 'CHANNEL_LIST', None) or [(r, r, '') for r in rules]
-    out = [item(n, r if r in rules else None, m) for n, r, m in full]
+    out = [item(n, r if (r in rules or r == 'API') else None, m) for n, r, m in full]
     listed = {c[1] for c in full} | set(getattr(cs, 'CHANNEL_HIDE', ()))
     out += [item(r, r, '아마란스 매출처 이름 미지정') for r in rules if r not in listed]
     try:
