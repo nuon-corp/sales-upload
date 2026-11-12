@@ -53,7 +53,11 @@
   .panel-title svg { color: var(--accent); }
 
   /* ── 사이드바 ── */
-  .side { position: sticky; top: 16px; padding: 18px; max-height: calc(100vh - 32px); overflow-y: auto; }
+  /* 페이지 전체가 스크롤되지 않게 화면 높이 안에 맞추고, 목록만 안에서 스크롤 */
+  .side { position: sticky; top: 16px; padding: 18px 18px 0; height: calc(100vh - 190px); min-height: 380px; overflow: hidden;
+          display: flex; flex-direction: column; }
+  .side-scroll { flex: 1; min-height: 0; overflow-y: auto; margin: 0 -18px; padding: 0 18px 18px;
+                 border-top: 1px solid var(--line); }
   .side h2 { font-size: 15px; margin: 0 0 4px; letter-spacing: -0.02em; }
   .side .sub { color: var(--muted); font-size: 12px; margin: 0 0 8px; }
   .meter { height: 6px; border-radius: 999px; background: var(--skip); overflow: hidden; margin-bottom: 14px; }
@@ -78,6 +82,12 @@
   .side .tag.api { color: var(--aux-ink); background: var(--aux); }
   .side li.api:not(.grp)::before { background: var(--aux-dot); }
   .side li.grp.api { color: var(--aux-ink); }
+  .side li.grp { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
+  .side li.grp::after { content: ""; margin-left: auto; width: 7px; height: 7px; border-right: 2px solid currentColor;
+                        border-bottom: 2px solid currentColor; transform: rotate(45deg); transition: transform .15s; opacity: .7; }
+  .side li.grp.folded::after { transform: rotate(-45deg); }
+  .side li.grp:hover { opacity: .8; }
+  .side ul.fold-ok li.ok:not(.grp), .side ul.fold-no li.no:not(.grp), .side ul.fold-api li.api:not(.grp) { display: none; }
   .side .nm { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .side .acc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .side .acc.rule { text-decoration: underline dotted; text-underline-offset: 3px; width: fit-content; max-width: 100%; }
@@ -168,7 +178,7 @@
 
   @media (max-width: 860px) {
     .layout { grid-template-columns: 1fr; }
-    .side { position: static; max-height: 360px; }
+    .side { position: static; height: 480px; }
     .wrap { padding: 20px 16px 40px; }
   }
 </style>
@@ -194,8 +204,10 @@
     <p class="sub" id="chcount">불러오는 중…</p>
     <div class="meter"><i id="chbar"></i></div>
     <p class="guide">매출처별로 <b>파일 한 개</b>로 만들어 올려 주세요. 부가세 내역처럼 따로 받은 자료는 같은 파일에 시트로 넣으면 돼요.</p>
-    <ul id="chlist"></ul>
-    <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>노란 표시가 있는 곳은 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
+    <div class="side-scroll">
+      <ul id="chlist"></ul>
+      <p class="foot">'아직 안 됨' 매출처 파일은 '건너뜀'으로 표시돼요. 원본 파일을 전산 담당자에게 보내 주세요.<br>노란 표시가 있는 곳은 아직 검증 전이라 결과를 꼭 대조해 주세요.</p>
+    </div>
   </aside>
   <main>
 
@@ -285,9 +297,18 @@ function showChannels() {
   $('chcount').textContent = `전체 ${list.length}곳 · 변환 가능 ${ok.length}` + (api.length ? ` · API ${api.length}` : '') + ` · 아직 안 됨 ${no.length}`;
   $('chbar').style.width = (list.length ? ok.length / list.length * 100 : 0) + '%';
   const ul = $('chlist'); ul.innerHTML = '';
+  // 묶음 접기/펼치기 — 이 브라우저에 기억 (API는 처음에 접힘)
+  let fold = { api: true };
+  try { fold = Object.assign(fold, JSON.parse(localStorage.getItem('chfold') || '{}')); } catch (e) {}
   const group = (title, arr, cls) => {
     if (!arr.length) return;
-    const h = document.createElement('li'); h.className = 'grp ' + cls; h.textContent = `${title} (${arr.length})`; ul.appendChild(h);
+    const h = document.createElement('li'); h.className = 'grp ' + cls; h.textContent = `${title} (${arr.length})`;
+    h.setAttribute('role', 'button'); h.tabIndex = 0;
+    const apply = () => { ul.classList.toggle('fold-' + cls, !!fold[cls]); h.classList.toggle('folded', !!fold[cls]);
+                          h.setAttribute('aria-expanded', String(!fold[cls])); };
+    const toggle = () => { fold[cls] = !fold[cls]; apply(); try { localStorage.setItem('chfold', JSON.stringify(fold)); } catch (e) {} };
+    h.onclick = toggle; h.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } };
+    apply(); ul.appendChild(h);
     for (const c of arr) {
       const li = document.createElement('li'); li.className = cls;
       const nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = c.name; nm.title = c.name; li.appendChild(nm);
@@ -302,8 +323,8 @@ function showChannels() {
     }
   };
   group('변환 가능', ok, 'ok');
-  group('API로 처리', api, 'api');
   group('아직 안 됨', no, 'no');
+  group('API로 처리', api, 'api');
 }
 
 const BRIDGE = `
