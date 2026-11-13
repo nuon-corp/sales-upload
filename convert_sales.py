@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-12 16:06'
+RULES_VERSION = '2026-11-13 09:28'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1288,6 +1288,46 @@ def parse_benepia(wb, bk):
     _tax_invoice_row(bk)
     bk.info.append('매입 방식: 매출 = 매입액, 수수료 없음')
 
+TEMU_TAX = '14'   # 결제수단 정보 없음
+
+
+def parse_temu(wb, bk):
+    """테무 거래 내역(Order Payment·Refund·Advertising service fee 등):
+    매출 = Order Payment 합계(제품 비용 + 기타=배송비), Refund는 마이너스 매출, 광고 = Advertising service fee,
+    수수료 = Others(주문처리지연 잡손실 등), Reserve/Released amount(보증금 이동, 합계 0)는 제외. 부가세 시트는 14(건별).
+    수수료 자료는 따로 없음, 광고비는 부가세 포함 ÷1.1 (경영지원팀 확인 11/13)."""
+    ws = sheet(wb, '§', '거래 유형', '주문 ID', '총 제품 비용', '합계')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '거래 유형', '주문 ID', '총 제품 비용', '합계')
+    h = header_index(rows[hi])
+    names, skipped = [], defaultdict(lambda: [0, 0])
+    for r in rows[hi + 1:]:
+        kind = str(r[h['거래 유형']] or '').strip()
+        if not kind:
+            continue
+        amt, name = num(r[h['합계']]), r[h['제품 세부 정보']] or ''
+        if kind in ('Order Payment', 'Refund'):
+            bk.add_gross('매출', None, name, amt)
+            names.append(str(name))
+        elif kind == 'Advertising service fee':
+            bk.add_gross('광고', None, '테무 광고비', -amt)
+        elif kind in ('Reserve amount', 'Released amount'):
+            skipped[kind][0] += 1; skipped[kind][1] += amt
+        else:
+            bk.add_gross('수수료', None, f'테무 {kind}', -amt)
+            sup, vat = split_vat(-amt)
+            bk.notes.append(f"'{kind}' {-amt:,}원(공급가 {sup:,} / 부가세 {vat:,})을 수수료 '테무 {kind}'로 넣음 — "
+                            "주문처리지연 잡손실이면 전표 입력 때 계정과 부가세를 같이 수정")
+    found = [b for b in ESM_BRANDS if b in ' '.join(names)]
+    # 계정: 살림백서 / 프로클 / 건기식(아우페·헤디안도 이 계정에서 판매 — 경영지원팀 11/13)
+    bk.label = '살림백서' if '살림백서' in found else '프로클' if '프로클' in found else '건기식'
+    bk.tax_from_sales(TEMU_TAX)
+    if skipped:
+        bk.info.append('보증금 이동(Reserve/Released amount)은 제외: '
+                       + ', '.join(f'{k} {n}건 {a:,}원' for k, (n, a) in skipped.items()))
+    bk.info.append(f'부가세 시트: 결제수단 정보가 없어 {TAX_NAME[TEMU_TAX]}({TEMU_TAX})로 넣음')
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
@@ -1338,15 +1378,15 @@ CHANNEL_LIST = [
     ('(주)카카오_헤디안(카카오톡스토어)', '카카오', ''),
     ('씨제이이엔엠(CJ오쇼핑)_살림백서', 'CJ온스타일', ''),
     ('(주)제이슨그룹', '제이슨딜', ''),
-    ('테무(TEMU)', None, ''),
+    ('테무(TEMU)', '테무', '건기식 계정 (아우페·헤디안도 판매)'),
     ('마켓컬리_살림백서', None, ''),
     ('에스케이엠앤서비스 주식회사(베네피아)', '베네피아', ''),
-    ('테무(살림백서)', None, ''),
+    ('테무(살림백서)', '테무', ''),
     ('지마켓(newnuon)', None, ''),
     ('지마켓글로벌 유한책임회사(newnuon)', None, ''),
     ('주식회사 티앤케이팩토리', None, ''),
     ('알리익스프레스(프로클)', '알리익스프레스', ''),
-    ('테무(프로클)', None, ''),
+    ('테무(프로클)', '테무', ''),
     ('삼성웰스토리(주)', '삼성웰스토리', ''),
     ('(주)카카오_프로클(카카오톡스토어)', '카카오', ''),
     ('주식회사 화해글로벌', None, ''),
@@ -1383,6 +1423,7 @@ CHANNELS = [
     ('G마켓', lambda w: has(w, 'G마켓 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_gmarket),
     ('옥션', lambda w: has(w, '옥션 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_auction),
     ('베네피아', lambda w: has(w, '벤더사바로가게쿠폰금액') or (has(w, '벤더사') and has(w, '직매입여부') and has(w, '매입액')), parse_benepia),
+    ('테무', lambda w: has(w, '거래 유형') and has(w, '총 제품 비용') and has(w, '주문 ID'), parse_temu),
     ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
@@ -1462,6 +1503,10 @@ def run_one(path, out_dir, extra, preloaded=None, companions=None):
                     bk.companions[key] = [(f"같은 파일의 '{ws.title}' 시트", ws)]
         parse(wb, bk)
         apply_extra(wb, bk)
+        if ch in RULE_PENDING:   # 아직 경영지원팀 정답지와 대조 안 한 규칙 → 결과를 노란 '확인필요'로
+            bk.notes.append('아직 경영지원팀 업로드 자료와 대조하지 않은 규칙이에요 — 정산서와 맞춰 보고 필요하면 결과 파일을 수정해 주세요')
+        elif ch in RAW_PENDING:
+            bk.notes.append('경영지원팀 가공 파일로만 확인한 규칙이에요 — 원본으로 변환한 결과는 정산서와 맞춰 보고 필요하면 수정해 주세요')
         bk.finalize()
         base = os.path.splitext(os.path.basename(path))[0]
         chl = f'{ch}({bk.label})' if bk.label else ch   # 화면 표시용 (카카오는 판매자번호로 브랜드 표시)
