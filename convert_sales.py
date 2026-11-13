@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-13 13:38'
+RULES_VERSION = '2026-11-13 15:23'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1377,12 +1377,66 @@ def parse_homeand(wb, bk):
     bk.tax_from_sales(HOMESHOP_TAX)
 
 
+COUPANG_PAY_TO_TAX = {'신용카드': '17', '현금': '31', '기타': '14'}
+
+
+def parse_coupang(wb, bk):
+    """쿠팡(마켓플레이스) Order Detail Report (경영지원팀 11/13):
+    매출 = 판매액 − 판매자 할인쿠폰(A+B), 수수료 = 매출 − 정산금액(= 판매수수료).
+    상품명 = 옵션명. 옵션명이 빈 행(배송료 등)은 바로 위 옵션명, 파일 맨 앞부터 비어 있으면 '살림백서'.
+    금액이 전부 0인 행(빈 배송료 행)은 건너뜀.
+    부가세 = Payment Method Detail 시트의 결제수단별 (판매 + 환불) 합계 — 신용카드 17 / 현금 31 / 기타 14."""
+    ws = sheet(wb, 'Order Detail', '판매액', '판매자 할인쿠폰(A+B)', '정산금액')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '판매액', '판매자 할인쿠폰(A+B)', '정산금액')
+    h = header_index(rows[hi])
+    last_option = '살림백서'
+    for r in rows[hi + 1:]:
+        if not r or not r[h['주문번호']]:
+            continue
+        option = str(r[h['옵션명']] or '').strip()
+        if option:
+            last_option = option
+        else:
+            option = last_option
+        sale = num(r[h['판매액']]) - num(r[h['판매자 할인쿠폰(A+B)']])
+        settle = num(r[h['정산금액']])
+        if not sale and not settle:
+            continue
+        oid = str(r[h['옵션 ID']] or '')
+        code = None if oid.startswith('<') else oid
+        taxable = str(r[h['과세유형']] or 'TAX').strip().upper() != 'FREE'
+        bk.add_gross('매출', code, option, sale, taxable)
+        bk.add_gross('수수료', code, option, sale - settle)
+    pm = sheet(wb, 'Payment Method', '항목유형', '신용카드(판매)')
+    if pm:
+        prow = list(pm.iter_rows(values_only=True))
+        ph = header_index(prow[find_header(prow, '항목유형', '신용카드(판매)')])
+        tot = defaultdict(int)
+        for r in prow[1:]:
+            for pay, code in COUPANG_PAY_TO_TAX.items():
+                for kind in ('판매', '환불'):
+                    col = f'{pay}({kind})'
+                    if col in ph:
+                        tot[code] += num(r[ph[col]])
+        for code, amt in tot.items():
+            if amt:
+                bk.add_tax_gross(code, amt)
+        got = sum(tot.values())
+        want = sum(x[2] + x[3] for x in bk.rows['매출'])
+        if got != want:
+            bk.notes.append(f'Payment Method Detail 합계 {got:,}원이 매출 {want:,}원과 다름 ({got - want:+,}원)')
+    else:
+        bk.tax_from_sales('14')
+        bk.notes.append('Payment Method Detail 시트가 없어 부가세 시트를 14(건별)로 채움 — 같은 파일에 넣어 주세요')
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
 # 두 번째 칸이 'API'면 변환기 대신 API로 처리하는 매출처 — 화면에 'API로 처리'로 따로 표시
 CHANNEL_LIST = [
-    ('쿠팡(주)', None, ''),
+    ('쿠팡(주)', '쿠팡', ''),
     ('지마켓글로벌 유한책임회사(옥션)', '옥션', '아우페·헤디안 계정으로 추정'),
     ('지마켓', 'G마켓', '아우페·헤디안 계정으로 추정'),
     ('11번가(십일번가)', '11번가', ''),
@@ -1446,7 +1500,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', 'CJ온스타일'}   # 공영·우리홈쇼핑은 9월 원본으로 확인 완료(11/12)
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '티앤케이팩토리', '제이슨딜', '옥션', '쇼핑엔티', '홈앤쇼핑'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '티앤케이팩토리', '제이슨딜', '옥션', '쇼핑엔티', '홈앤쇼핑', '쿠팡'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
@@ -1475,6 +1529,7 @@ CHANNELS = [
     ('테무', lambda w: has(w, '거래 유형') and has(w, '총 제품 비용') and has(w, '주문 ID'), parse_temu),
     ('쇼핑엔티', lambda w: has(w, '정산일일마감현황') or (has(w, '정산원가') and has(w, '판매원가') and has(w, '정산금액')), parse_shopnt),
     ('홈앤쇼핑', lambda w: has(w, '주문거래별 상세명세서') or (has(w, '수수료원가') and has(w, '지불예정액') and has(w, '매출원가')), parse_homeand),
+    ('쿠팡', lambda w: has(w, '판매자 할인쿠폰(A+B)') and has(w, '정산금액'), parse_coupang),
     ('티앤케이팩토리', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
