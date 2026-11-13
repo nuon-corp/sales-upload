@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-13 09:53'
+RULES_VERSION = '2026-11-13 10:06'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -997,7 +997,7 @@ CONSIGN_PAY_TO_TAX = {'카드': '17', '현금': '31', '포인트': '14', '기타
 
 
 def parse_consign(wb, bk):
-    """위탁몰(매출신고액 양식): 매출 = 총 결제금액 공급가/세액, 수수료 = 위탁수수료 공급가액/세액,
+    """티앤케이팩토리(매출신고액 양식, 위탁): 매출 = 총 결제금액 공급가/세액, 수수료 = 위탁수수료 공급가액/세액,
     부가세 = 카드 17 / 현금 31 / 포인트·기타 14."""
     ws = sheet(wb, '§', '총 결제금액(매출신고액)', '위탁수수료 공급가액')
     rows = list(ws.iter_rows(values_only=True))
@@ -1388,7 +1388,7 @@ CHANNEL_LIST = [
     ('테무(살림백서)', '테무', ''),
     ('지마켓(newnuon)', None, ''),
     ('지마켓글로벌 유한책임회사(newnuon)', None, ''),
-    ('주식회사 티앤케이팩토리', None, ''),
+    ('주식회사 티앤케이팩토리', '티앤케이팩토리', ''),
     ('알리익스프레스(프로클)', '알리익스프레스', ''),
     ('테무(프로클)', '테무', ''),
     ('삼성웰스토리(주)', '삼성웰스토리', ''),
@@ -1401,7 +1401,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', 'CJ온스타일'}   # 공영·우리홈쇼핑은 9월 원본으로 확인 완료(11/12)
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '위탁몰', '제이슨딜', '옥션'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '티앤케이팩토리', '제이슨딜', '옥션'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
@@ -1428,7 +1428,7 @@ CHANNELS = [
     ('옥션', lambda w: has(w, '옥션 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_auction),
     ('베네피아', lambda w: has(w, '벤더사바로가게쿠폰금액') or (has(w, '벤더사') and has(w, '직매입여부') and has(w, '매입액')), parse_benepia),
     ('테무', lambda w: has(w, '거래 유형') and has(w, '총 제품 비용') and has(w, '주문 ID'), parse_temu),
-    ('위탁몰', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
+    ('티앤케이팩토리', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
 
