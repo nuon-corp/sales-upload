@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-13 09:28'
+RULES_VERSION = '2026-11-13 09:39'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1293,8 +1293,9 @@ TEMU_TAX = '14'   # 결제수단 정보 없음
 
 def parse_temu(wb, bk):
     """테무 거래 내역(Order Payment·Refund·Advertising service fee 등):
-    매출 = Order Payment 합계(제품 비용 + 기타=배송비), Refund는 마이너스 매출, 광고 = Advertising service fee,
-    수수료 = Others(주문처리지연 잡손실 등), Reserve/Released amount(보증금 이동, 합계 0)는 제외. 부가세 시트는 14(건별).
+    매출 = Order Payment 합계(제품 비용 + 기타=배송비), Refund는 마이너스 매출,
+    수수료 = Advertising service fee(전표에서 이커머스광고비 계정), 광고 = Others(주문처리지연 잡손실 등 — 전표에서 수정),
+    Reserve/Released amount(보증금 이동, 합계 0)는 제외. 부가세 시트는 14(건별).
     수수료 자료는 따로 없음, 광고비는 부가세 포함 ÷1.1 (경영지원팀 확인 11/13)."""
     ws = sheet(wb, '§', '거래 유형', '주문 ID', '총 제품 비용', '합계')
     rows = list(ws.iter_rows(values_only=True))
@@ -1309,14 +1310,14 @@ def parse_temu(wb, bk):
         if kind in ('Order Payment', 'Refund'):
             bk.add_gross('매출', None, name, amt)
             names.append(str(name))
-        elif kind == 'Advertising service fee':
-            bk.add_gross('광고', None, '테무 광고비', -amt)
+        elif kind == 'Advertising service fee':   # 수수료 시트 → 전표에서 '이커머스광고비' 계정 (경영지원팀 11/13)
+            bk.add_gross('수수료', None, '테무 광고비', -amt)
         elif kind in ('Reserve amount', 'Released amount'):
             skipped[kind][0] += 1; skipped[kind][1] += amt
         else:
-            bk.add_gross('수수료', None, f'테무 {kind}', -amt)
+            bk.add_gross('광고', None, f'테무 {kind}', -amt)   # Others → 광고 시트 (경영지원팀 11/13)
             sup, vat = split_vat(-amt)
-            bk.notes.append(f"'{kind}' {-amt:,}원(공급가 {sup:,} / 부가세 {vat:,})을 수수료 '테무 {kind}'로 넣음 — "
+            bk.notes.append(f"'{kind}' {-amt:,}원(공급가 {sup:,} / 부가세 {vat:,})을 광고 시트 '테무 {kind}'로 넣음 — "
                             "주문처리지연 잡손실이면 전표 입력 때 계정과 부가세를 같이 수정")
     found = [b for b in ESM_BRANDS if b in ' '.join(names)]
     # 계정: 살림백서 / 프로클 / 건기식(아우페·헤디안도 이 계정에서 판매 — 경영지원팀 11/13)
