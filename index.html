@@ -167,10 +167,30 @@
   a.dl:hover { background: var(--accent); color: #fff; }
 
   /* ── 상세 ── */
-  #detail { white-space: pre-wrap; font-size: 13.5px; line-height: 1.7; min-height: 64px; margin: 0; padding: 14px 16px;
-            background: var(--bg); border-radius: 10px; color: var(--ink);
-            font-family: "Pretendard", "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, sans-serif;
+  #detail { font-size: 13.5px; line-height: 1.6; min-height: 64px; margin: 0; color: var(--ink);
             font-variant-numeric: tabular-nums; }
+  #detail .empty-msg { color: var(--muted); padding: 14px 16px; background: var(--bg); border-radius: 10px; }
+  .d-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; }
+  .d-head .fname { font-weight: 700; font-size: 15px; word-break: break-all; }
+  .d-head .ch { color: var(--muted); font-weight: 600; }
+  .d-head .outf { flex-basis: 100%; color: var(--muted); font-size: 12.5px; }
+  .d-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; }
+  .d-box { background: var(--bg); border-radius: 10px; padding: 10px 14px 6px; }
+  .d-box h4 { margin: 0 0 4px; font-size: 12px; color: var(--muted); font-weight: 700; }
+  .d-box table { font-size: 13.5px; }
+  .d-box th, .d-box td { padding: 6px 8px; background: none; border-bottom: 1px solid var(--line); }
+  .d-box th { font-size: 11.5px; }
+  .d-box td.n, .d-box th.n { text-align: right; white-space: nowrap; }
+  .d-box tr.tot td { font-weight: 700; border-bottom: 0; }
+  .d-box tr:last-child td { border-bottom: 0; }
+  .d-notes { margin: 12px 0 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .d-notes li { padding: 8px 12px; border-radius: 8px; font-size: 13px; white-space: pre-wrap; }
+  .d-notes li.warn { background: var(--warn); color: var(--warn-ink); }
+  .d-notes li.warn::before { content: "※ "; font-weight: 700; }
+  .d-notes li.info { background: var(--bg); color: var(--muted); }
+  .d-notes li.err { background: var(--err); color: var(--err-ink); }
+  #detail details { margin-top: 10px; font-size: 12px; color: var(--muted); }
+  #detail details pre { white-space: pre-wrap; background: var(--bg); padding: 10px; border-radius: 8px; }
 
   .loading { display: inline-block; width: 12px; height: 12px; border: 2px solid #c4cad4; border-top-color: var(--accent);
              border-radius: 50%; animation: spin .8s linear infinite; vertical-align: -2px; margin-right: 6px; }
@@ -267,7 +287,7 @@
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
       상세 정보
     </p>
-    <pre id="detail">행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.</pre>
+    <div id="detail"><div class="empty-msg">행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.</div></div>
   </div>
   </main>
   </div>
@@ -489,20 +509,43 @@ function refresh() {
   $('clear').disabled = busy;
 }
 
+const esc = t => String(t ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+function emptyDetail(msg) { $('detail').innerHTML = `<div class="empty-msg">${esc(msg)}</div>`; }
+
 function showDetail() {
   const it = items[selected];
   if (!it) return;
   const r = it.res;
-  if (!r) { $('detail').textContent = `${it.name}\n아직 변환하지 않았어요.`; return; }
-  const L = [`${it.name}  →  ${STATUS[statusKey(r)]}` + (r.channel ? `  (${r.channel})` : '')];
-  if (r.out) L.push(`결과 파일: ${r.out}`);
-  for (const [t, v] of Object.entries(r.sums || {})) if (v[0]) L.push(`  ${t}: ${v[0]}행  공급가 ${won(v[1])}  부가세 ${won(v[2])}  합계 ${won(v[1] + v[2])}`);
-  for (const [c, v] of Object.entries(r.tax || {})) L.push(`  부가세 ${(r.taxname || {})[c] || c}(${c}): 공급가 ${won(v[0])}  부가세 ${won(v[1])}`);
-  if (r.message) L.push(r.message);
-  for (const n of r.notes || []) L.push('※ ' + n);
-  for (const n of r.info || []) L.push('· ' + n);
-  if (r.trace) L.push('\n[기술 정보 — 전산 담당자 전달용]\n' + r.trace);
-  $('detail').textContent = L.join('\n');
+  if (!r) { emptyDetail(`${it.name} — 아직 변환하지 않았어요.`); return; }
+  const k = statusKey(r);
+  let h = `<div class="d-head"><span class="fname">${esc(it.name)}</span><span class="pill s-${k}">${STATUS[k]}</span>`
+        + (r.channel ? `<span class="ch">${esc(r.channel)}</span>` : '')
+        + (r.out ? `<span class="outf">결과 파일: ${esc(r.out)}</span>` : '') + '</div>';
+  // 시트별 합계
+  const sums = ['매출', '수수료', '광고'].map(t => [t, (r.sums || {})[t]]).filter(([, v]) => v && v[0]);
+  const tax = Object.entries(r.tax || {});
+  let boxes = '';
+  if (sums.length) {
+    boxes += '<div class="d-box"><h4>시트별 합계</h4><table><thead><tr><th>시트</th><th class="n">행</th><th class="n">공급가</th><th class="n">부가세</th><th class="n">합계</th></tr></thead><tbody>'
+      + sums.map(([t, v]) => `<tr><td>${esc(t)}</td><td class="n">${v[0]}</td><td class="n">${won(v[1])}</td><td class="n">${won(v[2])}</td><td class="n"><b>${won(v[1] + v[2])}</b></td></tr>`).join('')
+      + '</tbody></table></div>';
+  }
+  if (tax.length) {
+    let ts = 0, tv = 0;
+    boxes += '<div class="d-box"><h4>부가세 시트 (과세구분별)</h4><table><thead><tr><th>과세구분</th><th class="n">공급가</th><th class="n">부가세</th><th class="n">합계</th></tr></thead><tbody>'
+      + tax.map(([c, v]) => { ts += v[0]; tv += v[1];
+          return `<tr><td>${esc((r.taxname || {})[c] || c)} (${esc(c)})</td><td class="n">${won(v[0])}</td><td class="n">${won(v[1])}</td><td class="n">${won(v[0] + v[1])}</td></tr>`; }).join('')
+      + (tax.length > 1 ? `<tr class="tot"><td>합계</td><td class="n">${won(ts)}</td><td class="n">${won(tv)}</td><td class="n">${won(ts + tv)}</td></tr>` : '')
+      + '</tbody></table></div>';
+  }
+  if (boxes) h += `<div class="d-grid">${boxes}</div>`;
+  const notes = [];
+  if (r.message) notes.push(`<li class="${r.status === '오류' ? 'err' : 'info'}">${esc(r.message)}</li>`);
+  for (const n of r.notes || []) notes.push(`<li class="warn">${esc(n)}</li>`);
+  for (const n of r.info || []) notes.push(`<li class="info">${esc(n)}</li>`);
+  if (notes.length) h += `<ul class="d-notes">${notes.join('')}</ul>`;
+  if (r.trace) h += `<details><summary>기술 정보 (전산 담당자 전달용)</summary><pre>${esc(r.trace)}</pre></details>`;
+  $('detail').innerHTML = h;
 }
 
 async function run() {
@@ -549,7 +592,7 @@ $('zip').onclick = () => {
   const d = new Date(), p = n => String(n).padStart(2, '0');
   download('/app/결과.zip', `매출업로드_결과_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}.zip`);
 };
-$('clear').onclick = () => { items = []; selected = null; $('detail').textContent = '행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.'; refresh(); };
+$('clear').onclick = () => { items = []; selected = null; emptyDetail('행을 클릭하면 공급가 / 부가세 상세가 여기에 나와요.'); refresh(); };
 
 boot();
 </script>
