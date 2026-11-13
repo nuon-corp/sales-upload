@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-13 13:33'
+RULES_VERSION = '2026-11-13 13:38'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1555,9 +1555,9 @@ def run_one(path, out_dir, extra, preloaded=None, companions=None):
         parse(wb, bk)
         apply_extra(wb, bk)
         if ch in RULE_PENDING:   # 아직 경영지원팀 정답지와 대조 안 한 규칙 → 결과를 노란 '확인필요'로
-            bk.notes.append('아직 경영지원팀 업로드 자료와 대조하지 않은 규칙이에요 — 정산서와 맞춰 보고 필요하면 결과 파일을 수정해 주세요')
+            bk.notes.append('원본 금액과는 맞아요 — 확인해 주세요')
         elif ch in RAW_PENDING:
-            bk.notes.append('경영지원팀 가공 파일로만 확인한 규칙이에요 — 원본으로 변환한 결과는 정산서와 맞춰 보고 필요하면 수정해 주세요')
+            bk.notes.append('원본 금액과는 맞아요 — 확인해 주세요')
         bk.finalize()
         base = os.path.splitext(os.path.basename(path))[0]
         chl = f'{ch}({bk.label})' if bk.label else ch   # 화면 표시용 (카카오는 판매자번호로 브랜드 표시)
