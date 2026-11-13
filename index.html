@@ -320,8 +320,8 @@ function showChannels() {
       if (c.memo) sub(c.memo, c.memo);
       const tag = (txt, k, tip) => { const t = document.createElement('span'); t.className = 'tag' + (k ? ' ' + k : ''); t.textContent = txt; if (tip) t.title = tip; li.appendChild(t); };
       if (c.api) tag('API로 처리', 'api', '정산 자료를 API로 받아 처리 — 변환기에 넣지 않아요');
-      if (c.pending) tag('원본 확인 중', 'warn', '경영지원팀 가공 파일로만 테스트함 · 원본(raw) 데이터로 다시 확인 필요');
-      if (c.confirm) tag('경영지원팀 확인 중', 'warn', '원본으로 규칙을 만들었지만 경영지원팀 업로드 기준과 아직 대조 안 함');
+      if (c.pending) tag('원본 확인필요', 'warn', '경영지원팀 가공 파일로만 테스트함 · 원본(raw) 데이터로 다시 확인 필요');
+      if (c.confirm) tag('확인필요', 'warn', '경영지원팀 업로드 자료와 아직 대조 안 한 규칙 — 변환 결과를 정산서와 맞춰 보고 수정 필요');
       ul.appendChild(li);
     }
   };
@@ -382,6 +382,7 @@ def _run(names):
         r['out'] = os.path.basename(r['out']) if r.get('out') else ''
         r['sums'] = {k: list(v) for k, v in r.get('sums', {}).items()}
         r['tax'] = {k: list(v) for k, v in r.get('tax', {}).items()}
+        r['taxname'] = {k: getattr(cs, 'TAX_NAME', {}).get(k, k) for k in r['tax']}
         out.append(r)
     with zipfile.ZipFile('/app/결과.zip', 'w', zipfile.ZIP_DEFLATED) as z:
         for f in sorted(os.listdir(cs.OUT_DIR)):
@@ -496,7 +497,7 @@ function showDetail() {
   const L = [`${it.name}  →  ${STATUS[statusKey(r)]}` + (r.channel ? `  (${r.channel})` : '')];
   if (r.out) L.push(`결과 파일: ${r.out}`);
   for (const [t, v] of Object.entries(r.sums || {})) if (v[0]) L.push(`  ${t}: ${v[0]}행  공급가 ${won(v[1])}  부가세 ${won(v[2])}  합계 ${won(v[1] + v[2])}`);
-  for (const [c, v] of Object.entries(r.tax || {})) L.push(`  부가세 ${c}: 공급가 ${won(v[0])}  부가세 ${won(v[1])}`);
+  for (const [c, v] of Object.entries(r.tax || {})) L.push(`  부가세 ${(r.taxname || {})[c] || c}(${c}): 공급가 ${won(v[0])}  부가세 ${won(v[1])}`);
   if (r.message) L.push(r.message);
   for (const n of r.notes || []) L.push('※ ' + n);
   for (const n of r.info || []) L.push('· ' + n);
