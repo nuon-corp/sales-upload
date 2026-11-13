@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-13 10:06'
+RULES_VERSION = '2026-11-13 13:33'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -1332,6 +1332,51 @@ def parse_temu(wb, bk):
     bk.info.append(f'부가세 시트: 결제수단 정보가 없어 {TAX_NAME[TEMU_TAX]}({TEMU_TAX})로 넣음')
 
 
+def parse_shopnt(wb, bk):
+    """쇼핑엔티((주)티알엔) 정산일일마감현황: 매출 = 판매금액(쇼핑엔티 부담 프로모션 차감 후, 부가세 포함),
+    수수료 = 판매금액 − 정산금액 (= 판매원가 × 수수료율 − 쇼핑엔티 부담 프로모션, 합계 = 세금계산서 발행금액).
+    홈쇼핑 위수탁이라 부가세 시트는 14(건별)."""
+    ws = sheet(wb, '정산일일마감', '정산금액', '판매금액', '판매원가')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '정산금액', '판매금액', '판매원가')
+    h = header_index(rows[hi])
+    for r in rows[hi + 1:]:
+        if not r or not r[h['상품코드']]:
+            continue   # 합계 행
+        code, name = r[h['상품코드']], r[h['상품명']]
+        taxable = str(r[h['과세여부']] or '과세').strip() != '면세'
+        sale = num(r[h['판매금액']])
+        bk.add_gross('매출', code, name, sale, taxable)
+        bk.add_gross('수수료', code, name, sale - num(r[h['정산금액']]))
+    bk.tax_from_sales(HOMESHOP_TAX)
+    inv = sheet(wb, '결산명세', '수수료율')
+    if inv:   # 세금계산서 발행금액과 수수료 합계 대조
+        for r in inv.iter_rows(values_only=True):
+            if r and any(str(v or '').strip() == '세금계산서 발행금액' for v in r):
+                want = next((num(v) for v in reversed(r) if isinstance(v, (int, float)) and v), 0)
+                got = sum(x[2] + x[3] for x in bk.rows['수수료'])
+                if want and got != want:
+                    bk.notes.append(f'수수료 {got:,}원이 결산명세 세금계산서 발행금액 {want:,}원과 다름 ({got - want:+,}원)')
+                else:
+                    bk.info.append(f'수수료 합계가 결산명세 세금계산서 발행금액 {want:,}원과 같음')
+
+
+def parse_homeand(wb, bk):
+    """홈앤쇼핑 주문거래별 상세명세서(위탁, 협력사코드 114112):
+    매출 = 매출원가/매출VAT, 수수료 = 수수료원가/수수료VAT (원본 값 그대로). 부가세 시트는 14(건별)."""
+    ws = sheet(wb, '§', '매출원가', '매출VAT', '수수료원가', '지불예정액')
+    rows = list(ws.iter_rows(values_only=True))
+    hi = find_header(rows, '매출원가', '매출VAT', '수수료원가', '지불예정액')
+    h = header_index(rows[hi])
+    for r in rows[hi + 1:]:
+        if not r or not isdigit(r[h['No']]):
+            continue   # 합계 행
+        code, name = r[h['상품코드']], r[h['상품명']]
+        bk.add('매출', code, name, num(r[h['매출원가']]), num(r[h['매출VAT']]))
+        bk.add('수수료', code, name, num(r[h['수수료원가']]), num(r[h['수수료VAT']]))
+    bk.tax_from_sales(HOMESHOP_TAX)
+
+
 # 아마란스 매출처 전체 목록 — 화면 왼쪽에 표시 (변환 여부 확인용, 인식에는 안 씀)
 # (아마란스 매출처명, 변환 규칙 이름 또는 None, 메모)
 # 새 매출처 규칙을 만들면 두 번째 칸에 CHANNELS의 이름을 적으면 '변환 가능'으로 바뀜.
@@ -1343,7 +1388,7 @@ CHANNEL_LIST = [
     ('11번가(십일번가)', '11번가', ''),
     ('씨제이이엔엠(CJ오쇼핑)', 'CJ온스타일', ''),
     ('(주)공영홈쇼핑', '공영홈쇼핑', ''),
-    ('(주)홈앤쇼핑', None, ''),
+    ('(주)홈앤쇼핑', '홈앤쇼핑', ''),
     ('쿠팡 주식회사(로켓배송)', None, ''),
     ('롯데닷컴-롯데쇼핑(주)e커머스사업본부', '롯데ON', ''),
     ('(주)우리홈쇼핑', '우리홈쇼핑', ''),
@@ -1353,7 +1398,7 @@ CHANNEL_LIST = [
     ('(주)카카오', None, ''),
     ('에스케이스토아 주식회사', 'SK스토아', ''),
     ('엔에이치엔페이코(주)', None, ''),
-    ('(주)티알엔', None, ''),
+    ('(주)티알엔', '쇼핑엔티', ''),
     ('Qoo10(큐텐)', None, ''),
     ('주식회사 레브잇(올웨이즈)', '올웨이즈', ''),
     ('(주)버킷플레이스', '오늘의집', ''),
@@ -1401,7 +1446,7 @@ CHANNEL_LIST = [
 RAW_PENDING = {'오늘의집', 'CJ온스타일'}   # 공영·우리홈쇼핑은 9월 원본으로 확인 완료(11/12)
 
 # 원본으로 규칙은 만들었지만 경영지원팀 업로드 기준과 아직 대조 못 한 매출처 — '경영지원팀 확인 중' 표시.
-RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '티앤케이팩토리', '제이슨딜', '옥션'}
+RULE_PENDING = {'알리익스프레스', '삼성웰스토리', '복지샵', '티앤케이팩토리', '제이슨딜', '옥션', '쇼핑엔티', '홈앤쇼핑'}
 
 # 변환 규칙은 있지만 화면 목록에서 숨길 것
 CHANNEL_HIDE = {'NS홈쇼핑'}
@@ -1428,6 +1473,8 @@ CHANNELS = [
     ('옥션', lambda w: has(w, '옥션 구매자 쿠폰 할인') and has(w, '판매자 최종정산금'), parse_auction),
     ('베네피아', lambda w: has(w, '벤더사바로가게쿠폰금액') or (has(w, '벤더사') and has(w, '직매입여부') and has(w, '매입액')), parse_benepia),
     ('테무', lambda w: has(w, '거래 유형') and has(w, '총 제품 비용') and has(w, '주문 ID'), parse_temu),
+    ('쇼핑엔티', lambda w: has(w, '정산일일마감현황') or (has(w, '정산원가') and has(w, '판매원가') and has(w, '정산금액')), parse_shopnt),
+    ('홈앤쇼핑', lambda w: has(w, '주문거래별 상세명세서') or (has(w, '수수료원가') and has(w, '지불예정액') and has(w, '매출원가')), parse_homeand),
     ('티앤케이팩토리', lambda w: has(w, '총 결제금액(매출신고액)') and has(w, '위탁수수료 공급가액'), parse_consign),
     (POINTMALL_NAME, lambda w: has(w, '판매사수수료(총액)') and has(w, '대금지급액'), parse_pointmall),
 ]
