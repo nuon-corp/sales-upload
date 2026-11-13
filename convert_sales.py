@@ -21,7 +21,7 @@ import openpyxl
 
 # 규칙을 고치면 이 날짜·시간도 바꿔 주세요 — 웹 화면 위쪽에 표시돼서 어떤 버전으로 변환했는지 알 수 있어요.
 # 바뀐 내용은 깃헙 커밋 기록(convert_sales.py → History)에 남아요.
-RULES_VERSION = '2026-11-13 09:39'
+RULES_VERSION = '2026-11-13 09:53'
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE = os.path.join(BASE, '데이터 업로드 양식.xlsx')
@@ -958,7 +958,7 @@ def parse_ali(wb, bk):
         ah = header_index(arows[find_header(arows, '비용', '클릭 수')])
         total = sum(_won(r[ah['비용']]) for r in arows if re.match(r'\d{4}-\d{2}-\d{2}', str(r[ah['날짜']] or '')))
         if total:
-            bk.add_gross('광고', None, '알리익스프레스 광고비', total)
+            bk.add_gross('광고', None, '알리익스프레스 광고비', total)   # 원본 '광고' 시트 비용 합계 (상품명 칸 없음, 경영지원팀 지정 이름 11/13)
     bk.info.append(f'부가세 시트: 결제수단 정보가 없어 {TAX_NAME[ALI_TAX]}({ALI_TAX})로 넣음')
 
 
@@ -1049,8 +1049,9 @@ def parse_always(wb, bk):
             bk.add_tax_gross(ALWAYS_PAY_TO_TAX.get(str(pay).strip(), '14'), amt)
         elif fee:
             # 상품 없는 청구(모두 수수료): 주문아이디 칸에 '정산제외 - 서버이용료 / 올팜 사진후기 / 기타' 같은 항목명이 있음
-            item = re.sub(r'^정산제외\s*-\s*', '', str(r[h['주문아이디']] or '').strip()) or '기타'
-            bk.add_gross('수수료', None, f'올웨이즈 {item}', fee)
+            raw = str(r[h['주문아이디']] or '').strip()          # 원본 글자 그대로 (예: '정산제외 - 서버이용료')
+            item = re.sub(r'^정산제외\s*-\s*', '', raw) or '기타'
+            bk.add_gross('수수료', None, raw or '세금계산서 발급금액', fee)
             etc[item][0] += 1; etc[item][1] += fee
     if etc:   # 정산제외 항목은 모두 수수료 (경영지원팀 확인 11/12)
         bk.info.append('정산제외 항목은 수수료로 넣음: ' + ', '.join(f'{k} {n}건 {a:,}원' for k, (n, a) in etc.items()))
@@ -1078,7 +1079,7 @@ def parse_jason(wb, bk):
         pay_out += num(r[h['공급가']]) + num(r[h['배송비']]) + num(r[h['CS배송비(공급처)']]) \
             + num(r[h['고객보상']]) + num(r[h['추가결제금(공급처)']])
     if sales:
-        bk.add_gross('수수료', None, '제이슨딜 수수료(제이슨 수익)', sales - pay_out)
+        bk.add_gross('수수료', None, '수수료', sales - pay_out)   # 원본에 수수료 행이 없어 '수수료'로 (= 제이슨 수익)
     bk.info.append(f'지급 금액 {pay_out:,}원 = 공급가 + 배송비, 수수료 = 매출 − 지급 금액')
 
 
@@ -1169,7 +1170,8 @@ def _esm_rows(bk, prod, ship, pay_col, ship_pay, ship_net, sales=True, fee=True)
             if sales:
                 bk.add_gross('매출', None, '배송비', num(r[hs[ship_pay]]))
             if fee:
-                bk.add_gross('수수료', None, '배송비 서비스이용료', num(r[hs[ship_pay]]) - num(r[hs[ship_net]]))
+                fee_col = '서비스이용료(선결제배송비)' if '서비스이용료(선결제배송비)' in hs else '배송수수료'
+                bk.add_gross('수수료', None, fee_col, num(r[hs[ship_pay]]) - num(r[hs[ship_net]]))   # 원본 열 제목 그대로
 
 
 def parse_gmarket(wb, bk):
@@ -1245,9 +1247,9 @@ def parse_auction(wb, bk):
                 continue
             kind = str(r[hx['종류']] or '').strip() if '종류' in hx else ''
             amt = num(r[hx['금액']])
-            bk.add_gross('매출', None, f'배송비({kind})' if kind else '배송비', amt)
+            bk.add_gross('매출', None, kind or '금액', amt)   # 원본 '종류' 글자 그대로 (예: 환불금차감)
             if amt - num(r[hx['배송비 정산액']]):
-                bk.add_gross('수수료', None, '배송비 서비스이용료', amt - num(r[hx['배송비 정산액']]))
+                bk.add_gross('수수료', None, '배송수수료', amt - num(r[hx['배송비 정산액']]))
     if vrows:
         for r in vrows:
             bk.add_tax_gross(ESM_VAT_TO_TAX.get(str(r[hv['자료구분']] or '').strip(), '14'), num(r[hv['매출금액']]))
@@ -1306,18 +1308,19 @@ def parse_temu(wb, bk):
         kind = str(r[h['거래 유형']] or '').strip()
         if not kind:
             continue
-        amt, name = num(r[h['합계']]), r[h['제품 세부 정보']] or ''
+        amt = num(r[h['합계']])
+        name = r[h['제품 세부 정보']] or kind   # 상품명이 빈 행(광고비·Others)은 원본 '거래 유형' 그대로
         if kind in ('Order Payment', 'Refund'):
             bk.add_gross('매출', None, name, amt)
             names.append(str(name))
         elif kind == 'Advertising service fee':   # 수수료 시트 → 전표에서 '이커머스광고비' 계정 (경영지원팀 11/13)
-            bk.add_gross('수수료', None, '테무 광고비', -amt)
+            bk.add_gross('수수료', None, name, -amt)
         elif kind in ('Reserve amount', 'Released amount'):
             skipped[kind][0] += 1; skipped[kind][1] += amt
         else:
-            bk.add_gross('광고', None, f'테무 {kind}', -amt)   # Others → 광고 시트 (경영지원팀 11/13)
+            bk.add_gross('광고', None, name, -amt)   # Others → 광고 시트 (경영지원팀 11/13)
             sup, vat = split_vat(-amt)
-            bk.notes.append(f"'{kind}' {-amt:,}원(공급가 {sup:,} / 부가세 {vat:,})을 광고 시트 '테무 {kind}'로 넣음 — "
+            bk.notes.append(f"'{kind}' {-amt:,}원(공급가 {sup:,} / 부가세 {vat:,})을 광고 시트로 넣음 — "
                             "주문처리지연 잡손실이면 전표 입력 때 계정과 부가세를 같이 수정")
     found = [b for b in ESM_BRANDS if b in ' '.join(names)]
     # 계정: 살림백서 / 프로클 / 건기식(아우페·헤디안도 이 계정에서 판매 — 경영지원팀 11/13)
